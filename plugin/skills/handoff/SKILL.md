@@ -41,7 +41,7 @@ If the background command never wakes you, use Monitor on it, or read
 
 ## Errors
 
-- `HANDOFF_SESSION_ID is not set`: the plugin's SessionStart hook didn't run. Tell the user.
+- `no session id`: you are not running inside Claude Code's Bash tool. Tell the user.
 - Write denied under `~/.handoff/queue`: setup isn't finished. Ask the user to run
   `scripts/setup.py` from the handoff repo themselves, in a regular terminal (not with `!`, which
   can be sandboxed), then restart Claude Code. Don't edit settings or try to create `~/.handoff` yourself.

@@ -49,9 +49,10 @@ stage `az account show` (or any harmless command) with `handoff add --wait`, the
 - Running it wakes Claude with the output.
 - Asking Claude to write anywhere under `~/.handoff/sessions/` is blocked by the sandbox.
 
-If the session shows **⚠ unverified** or `add` says `HANDOFF_SESSION_ID is not set`, the hooks
-didn't run. Usually that means `handoff` isn't on Claude Code's PATH (check `which handoff` in a
-new terminal), or the plugin isn't loaded.
+If the session shows **⚠ unverified**, the SessionStart hook didn't run for that session. Usually
+that means `handoff` isn't on Claude Code's PATH (check `which handoff` in a new terminal), the
+plugin isn't loaded, or the session started before setup (restart Claude Code itself, not just
+the conversation).
 
 ## Use
 
