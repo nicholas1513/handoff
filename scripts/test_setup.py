@@ -107,6 +107,21 @@ class SetupStepsTest(unittest.TestCase):
         self.assertEqual([c for c in calls if "install" in c or "add" in c], [])
 
 
+class WritableTest(unittest.TestCase):
+    def test_unwritable_dir_gives_sandbox_hint(self):
+        d = Path(tempfile.mkdtemp())
+        d.chmod(0o500)
+        self.addCleanup(d.chmod, 0o700)
+        with self.assertRaises(SetupError) as cm:
+            setup.require_writable(d)
+        self.assertIn("regular terminal", str(cm.exception))
+
+    def test_writable_dir_passes_and_leaves_nothing(self):
+        d = Path(tempfile.mkdtemp())
+        setup.require_writable(d)
+        self.assertEqual(list(d.iterdir()), [])
+
+
 class EnsureOnPathTest(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())

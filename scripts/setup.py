@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """First-time setup for handoff.
 
-Run it yourself, outside Claude's sandbox (in a terminal, or with `! ./scripts/setup.py` from a
-Claude prompt). Every step is safe to re-run.
+Run it yourself from a regular terminal, not through Claude: its sandbox blocks these writes,
+and `!` commands can be sandboxed too. Every step is safe to re-run.
 
     --yes   make changes (shell profile PATH line, ~/.claude/settings.json) without asking
 """
@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +24,18 @@ BROAD_ENTRIES = ("~", "~/", "~/.handoff", "~/.handoff/")
 
 class SetupError(Exception):
     pass
+
+
+SANDBOX_HINT = ("If you ran this from Claude Code with `!`, Claude's sandbox may have blocked it. "
+                "Run it from a regular terminal instead.")
+
+
+def require_writable(path):
+    """Fail early, with a useful message, instead of halfway through a build."""
+    try:
+        tempfile.TemporaryFile(dir=path).close()
+    except OSError as e:
+        raise SetupError(f"can't write to {path} ({e.strerror}). {SANDBOX_HINT}") from e
 
 
 def add_allow_write(settings, entry, home):
@@ -86,6 +99,7 @@ class Setup:
         self.step("2. Build the binary")
         bindir = self.cmd("go", "env", "GOBIN").stdout.strip() or str(Path(self.cmd("go", "env", "GOPATH").stdout.strip()) / "bin")
         Path(bindir).mkdir(parents=True, exist_ok=True)
+        require_writable(bindir)
         self._run(["go", "build", "-o", str(Path(bindir) / "handoff"), "./cmd/handoff"], check=True, cwd=self.repo)
         self._out(f"installed {bindir}/handoff")
         self.ensure_on_path(bindir)
@@ -191,6 +205,9 @@ def main(argv):
         setup.run()
     except SetupError as e:
         print(setup._style("31", "error: ") + str(e), file=sys.stderr)
+        return 1
+    except PermissionError as e:
+        print(setup._style("31", "error: ") + f"{e}. {SANDBOX_HINT}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as e:
         print(setup._style("31", "error: ") + f"{' '.join(e.cmd)} failed ({e.returncode})", file=sys.stderr)
