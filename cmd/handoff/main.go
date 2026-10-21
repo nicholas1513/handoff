@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,16 +43,44 @@ func main() {
 		err = tui.Run(q, home)
 	case args[0] == "add":
 		os.Exit(add(q, args[1:]))
-	case args[0] == "hook" && len(args) == 2 && args[1] == "session-start":
-		err = hook.SessionStart(q, os.Stdin, os.Getenv("CLAUDE_ENV_FILE"))
-	case args[0] == "hook" && len(args) == 2 && args[1] == "prompt":
-		err = hook.Prompt(q, os.Stdin)
+	case args[0] == "hook" && len(args) == 2 && (args[1] == "session-start" || args[1] == "prompt"):
+		err = runHook(q, args[1])
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
 	if err != nil {
 		fail(err)
+	}
+}
+
+func runHook(q *queue.Queue, event string) error {
+	in, err := io.ReadAll(os.Stdin)
+	if err == nil && event == "session-start" {
+		err = hook.SessionStart(q, bytes.NewReader(in), os.Getenv("CLAUDE_ENV_FILE"))
+	} else if err == nil {
+		err = hook.Prompt(q, bytes.NewReader(in))
+	}
+	logHook(q.Root, event, in, err)
+	return err
+}
+
+// logHook appends one line per hook call to <root>/hook.log, so "the hook didn't run" can be told
+// apart from "it ran and failed". On failure it lists the input's keys, never its values (prompts).
+// shortcut: the log grows one line per prompt; rotate it when gc exists (v2).
+func logHook(root, event string, in []byte, err error) {
+	line := fmt.Sprintf("%s %s ok env_file=%t", time.Now().Format(time.RFC3339), event, os.Getenv("CLAUDE_ENV_FILE") != "")
+	if err != nil {
+		var m map[string]any
+		json.Unmarshal(in, &m)
+		line = fmt.Sprintf("%s %s error: %v keys=%v env_file=%t", time.Now().Format(time.RFC3339), event, err, slices.Sorted(maps.Keys(m)), os.Getenv("CLAUDE_ENV_FILE") != "")
+	}
+	if os.MkdirAll(root, 0o700) != nil {
+		return
+	}
+	if f, ferr := os.OpenFile(filepath.Join(root, "hook.log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600); ferr == nil {
+		fmt.Fprintln(f, line)
+		f.Close()
 	}
 }
 

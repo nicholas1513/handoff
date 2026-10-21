@@ -52,7 +52,8 @@ stage `az account show` (or any harmless command) with `handoff add --wait`, the
 If the session shows **⚠ unverified**, the SessionStart hook didn't run for that session. Usually
 that means `handoff` isn't on Claude Code's PATH (check `which handoff` in a new terminal), the
 plugin isn't loaded, or the session started before setup (restart Claude Code itself, not just
-the conversation).
+the conversation). `~/.handoff/hook.log` has one line per hook call. A missing line means the
+hook never ran, and an `error` line shows why it failed and which input fields it received.
 
 ## Use
 
@@ -85,6 +86,7 @@ real prompt and directory, so a mismatch is visible but not blocked.
   sessions/<sid>/prompts/<ts>.json          UserPromptSubmit hook, newest 20 kept
   sessions/<sid>/results/<id>.json|.claim   viewer
   snap/<id>/<name>                          viewer: reviewed attachments
+  hook.log                                  hooks: one line per call (no prompt text)
 ```
 
 ## Develop

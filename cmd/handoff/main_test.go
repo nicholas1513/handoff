@@ -71,6 +71,27 @@ func TestHooks(t *testing.T) {
 	}
 }
 
+func TestHookLog(t *testing.T) {
+	root := t.TempDir()
+	handoff(t, root, "", `{"session_id":"`+sid+`","prompt":"secret words"}`, "hook", "prompt").Run()
+	handoff(t, root, "", `{"sessionId":"x","prompt":"secret words"}`, "hook", "prompt").Run()
+	b, err := os.ReadFile(filepath.Join(root, "hook.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(b)
+	lines := strings.Split(strings.TrimSpace(log), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "prompt ok") || !strings.Contains(lines[1], "prompt error") {
+		t.Fatalf("hook.log = %q", log)
+	}
+	if !strings.Contains(lines[1], "keys=[prompt sessionId]") {
+		t.Fatalf("error line should list the received keys: %q", lines[1])
+	}
+	if strings.Contains(log, "secret") {
+		t.Fatal("hook.log must not contain prompt text")
+	}
+}
+
 func TestAddErrors(t *testing.T) {
 	root := t.TempDir()
 	for name, c := range map[string]struct {
