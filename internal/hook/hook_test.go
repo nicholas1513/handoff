@@ -57,6 +57,22 @@ func TestSessionStartRejectsInjection(t *testing.T) {
 	}
 }
 
+// Background-task notifications arrive through UserPromptSubmit too, but they aren't the human's
+// words; recording them would show a chained item's provenance as the previous item's output.
+func TestPromptSkipsTaskNotifications(t *testing.T) {
+	q := &queue.Queue{Root: t.TempDir()}
+	Prompt(q, strings.NewReader(`{"session_id":"`+sid+`","prompt":"build the dashboard"}`))
+	time.Sleep(time.Millisecond)
+	note := `{"session_id":"` + sid + `","prompt":"  <task-notification>\n<task-id>x</task-id>\n</task-notification>"}`
+	if err := Prompt(q, strings.NewReader(note)); err != nil {
+		t.Fatal(err)
+	}
+	p, err := q.PromptBefore(sid, time.Now())
+	if err != nil || p.Prompt != "build the dashboard" {
+		t.Fatalf("prompt = %+v %v, want the human's prompt", p, err)
+	}
+}
+
 func TestPrompt(t *testing.T) {
 	q := &queue.Queue{Root: t.TempDir()}
 	in := `{"session_id":"` + sid + `","prompt":"make the dashboard\nplease"}`

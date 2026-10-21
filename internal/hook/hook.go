@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nicholas1513/handoff/internal/queue"
@@ -60,6 +61,11 @@ func Prompt(q *queue.Queue, r io.Reader) error {
 	in, err := read(r)
 	if err != nil {
 		return err
+	}
+	// Background-task notifications come through this hook too; they aren't the human's words.
+	// shortcut: matched by prefix; revisit if Claude Code adds other injected message kinds.
+	if strings.HasPrefix(strings.TrimSpace(in.Prompt), "<task-notification>") {
+		return nil
 	}
 	return q.AddPrompt(queue.Prompt{TS: time.Now(), SessionID: in.SessionID, Prompt: in.Prompt})
 }
