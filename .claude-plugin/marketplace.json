@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "handoff",
+  "description": "Review-and-run queue for commands an agent can't run from its sandbox.",
+  "owner": {
+    "name": "Nicholas DeTore",
+    "url": "https://github.com/nicholas1513"
+  },
+  "plugins": [
+    {
+      "name": "handoff",
+      "description": "Stage sandbox-blocked commands for the user to review and run as themselves. Needs the handoff binary on PATH (run scripts/setup.py).",
+      "source": "./plugin",
+      "category": "productivity"
+    }
+  ]
+}

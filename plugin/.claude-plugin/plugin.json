@@ -1,0 +1,6 @@
+{
+  "name": "handoff",
+  "version": "0.1.0",
+  "description": "Stage commands the sandbox blocks so the human can review and run them as themselves. Needs the handoff binary on PATH.",
+  "author": { "name": "Nicholas DeTore" }
+}
