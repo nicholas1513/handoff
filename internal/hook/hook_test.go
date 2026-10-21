@@ -33,6 +33,18 @@ func TestSessionStart(t *testing.T) {
 	}
 }
 
+// Claude Code may not provide CLAUDE_ENV_FILE to plugin hooks; the session record still matters.
+func TestSessionStartWithoutEnvFile(t *testing.T) {
+	q := &queue.Queue{Root: t.TempDir()}
+	in := `{"session_id":"` + sid + `","cwd":"/src"}`
+	if err := SessionStart(q, strings.NewReader(in), ""); err != nil {
+		t.Fatalf("SessionStart without env file: %v", err)
+	}
+	if _, err := q.ReadSession(sid); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionStartRejectsInjection(t *testing.T) {
 	q := &queue.Queue{Root: t.TempDir()}
 	env := filepath.Join(t.TempDir(), "env")

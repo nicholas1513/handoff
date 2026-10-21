@@ -42,8 +42,8 @@ func SessionStart(q *queue.Queue, r io.Reader, envFile string) error {
 	if err := q.WriteSession(queue.Session{SessionID: in.SessionID, Cwd: in.Cwd, TranscriptPath: in.TranscriptPath, Source: in.Source, Started: time.Now()}); err != nil {
 		return err
 	}
-	if envFile == "" {
-		return fmt.Errorf("CLAUDE_ENV_FILE not set")
+	if envFile == "" { // optional: add also reads CLAUDE_CODE_SESSION_ID
+		return nil
 	}
 	f, err := os.OpenFile(envFile, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {

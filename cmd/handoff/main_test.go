@@ -37,7 +37,7 @@ func TestMain(m *testing.M) {
 func handoff(t *testing.T, root, sid, stdin string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
-	cmd.Env = append(os.Environ(), "HANDOFF_ROOT="+root, "HANDOFF_SESSION_ID="+sid)
+	cmd.Env = append(os.Environ(), "HANDOFF_ROOT="+root, "HANDOFF_SESSION_ID="+sid, "CLAUDE_CODE_SESSION_ID=")
 	cmd.Stdin = strings.NewReader(stdin)
 	return cmd
 }
@@ -88,6 +88,19 @@ func TestAddErrors(t *testing.T) {
 		if code := exitCode(handoff(t, root, c.sid, "", c.args...).Run()); code != c.want {
 			t.Errorf("%s: exit %d, want %d", name, code, c.want)
 		}
+	}
+}
+
+func TestAddFallsBackToClaudeSessionID(t *testing.T) {
+	root := t.TempDir()
+	cmd := handoff(t, root, "", "", "add", "--desc", "d", "--", "true")
+	cmd.Env = append(cmd.Env, "CLAUDE_CODE_SESSION_ID="+sid)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("add with only CLAUDE_CODE_SESSION_ID: %v %s", err, out)
+	}
+	items, _, _ := (&queue.Queue{Root: root}).List()
+	if len(items) != 1 || items[0].SessionID != sid {
+		t.Fatalf("items = %+v", items)
 	}
 }
 

@@ -81,7 +81,10 @@ func add(q *queue.Queue, args []string) int {
 	}
 	sid := os.Getenv("HANDOFF_SESSION_ID")
 	if sid == "" {
-		fmt.Fprintln(os.Stderr, "handoff: HANDOFF_SESSION_ID is not set; is the handoff plugin installed?")
+		sid = os.Getenv("CLAUDE_CODE_SESSION_ID") // set by Claude Code in its Bash tool
+	}
+	if sid == "" {
+		fmt.Fprintln(os.Stderr, "handoff: no session id (CLAUDE_CODE_SESSION_ID or HANDOFF_SESSION_ID); run this from Claude Code")
 		return 1
 	}
 	cwd, err := os.Getwd()

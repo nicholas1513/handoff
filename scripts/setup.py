@@ -191,8 +191,8 @@ class Setup:
             "harmless command, e.g.\n"
             '  handoff add --wait --desc "check login" -- az account show\n'
             "and run `! handoff`. The item's session should show \"✓ verified\" with your prompt, and running\n"
-            "it should wake Claude with the output. \"⚠ unverified\" or \"HANDOFF_SESSION_ID is not set\" means\n"
-            "the hooks didn't run: check that `which handoff` works in a new terminal."
+            "it should wake Claude with the output. \"⚠ unverified\" means the SessionStart hook didn't\n"
+            "run: check that `which handoff` works in a new terminal, and restart Claude Code itself."
         )
 
 
