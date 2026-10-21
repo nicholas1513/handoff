@@ -9,13 +9,13 @@ handoff never reads, stores or passes on credentials. It runs CLIs you're alread
 ## First-time setup
 
 Install Go (1.23 or newer, e.g. `brew install go`) and have `python3` (3.8 or newer; macOS ships it
-with the Xcode command-line tools), then run the setup script **yourself, not
-through Claude**. Claude's sandbox blocks what it does: building into `~/go/bin`, creating
-`~/.handoff`, and editing `~/.claude/settings.json`. From inside a Claude Code session, run it with
-`!`, which runs outside the sandbox:
+with the Xcode command-line tools), then run the setup script **yourself, from a regular terminal**. Claude's sandbox blocks what it
+does: building into `~/go/bin`, creating `~/.handoff`, and editing `~/.claude/settings.json`.
+Running it with `!` from a Claude prompt isn't reliable, because `!` commands can also be
+sandboxed. If that happens, the script stops before changing anything and says so.
 
 ```sh
-./scripts/setup.py          # or: ! ./scripts/setup.py
+./scripts/setup.py
 ```
 
 It does the following, and is safe to re-run:
