@@ -107,5 +107,44 @@ class SetupStepsTest(unittest.TestCase):
         self.assertEqual([c for c in calls if "install" in c or "add" in c], [])
 
 
+class EnsureOnPathTest(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.bindir = str(self.home / "go" / "bin")
+        self.out = []
+
+    def run_it(self, shell="/bin/zsh", path="/usr/bin", answer="y", yes=False):
+        s = Setup("/repo", self.home, assume_yes=yes, ask=lambda _: answer, out=self.out.append)
+        with mock.patch.dict(setup.os.environ, {"SHELL": shell, "PATH": path}):
+            s.ensure_on_path(self.bindir)
+
+    def test_already_on_path_does_nothing(self):
+        self.run_it(path="/usr/bin:" + self.bindir, answer="n")
+        self.assertFalse((self.home / ".zshrc").exists())
+
+    def test_appends_to_zshrc_once(self):
+        (self.home / ".zshrc").write_text("export FOO=1\n")
+        self.run_it()
+        self.run_it(answer="n")  # second run must not ask or append again
+        text = (self.home / ".zshrc").read_text()
+        self.assertTrue(text.startswith("export FOO=1\n"))
+        self.assertEqual(text.count('export PATH="$HOME/go/bin:$PATH"'), 1)
+
+    def test_bash_uses_bash_profile_on_macos(self):
+        with mock.patch.object(setup.sys, "platform", "darwin"):
+            self.run_it(shell="/bin/bash", yes=True)
+        self.assertIn("$HOME/go/bin", (self.home / ".bash_profile").read_text())
+
+    def test_decline_leaves_profile_alone(self):
+        self.run_it(answer="n")
+        self.assertFalse((self.home / ".zshrc").exists())
+        self.assertTrue(any("not on PATH" in line for line in self.out))
+
+    def test_unknown_shell_prints_instructions(self):
+        self.run_it(shell="/usr/bin/fish", yes=True)
+        self.assertEqual(list(self.home.iterdir()), [])
+        self.assertTrue(any("PATH" in line for line in self.out))
+
+
 if __name__ == "__main__":
     unittest.main()

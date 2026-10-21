@@ -4,7 +4,7 @@
 Run it yourself, outside Claude's sandbox (in a terminal, or with `! ./scripts/setup.py` from a
 Claude prompt). Every step is safe to re-run.
 
-    --yes   edit ~/.claude/settings.json without asking
+    --yes   make changes (shell profile PATH line, ~/.claude/settings.json) without asking
 """
 
 import difflib
@@ -88,11 +88,30 @@ class Setup:
         Path(bindir).mkdir(parents=True, exist_ok=True)
         self._run(["go", "build", "-o", str(Path(bindir) / "handoff"), "./cmd/handoff"], check=True, cwd=self.repo)
         self._out(f"installed {bindir}/handoff")
-        if bindir not in os.environ.get("PATH", "").split(os.pathsep):
-            self.warn(
-                f"{bindir} is not on PATH. The plugin hooks call `handoff` by name, so add it to your\n"
-                f'  shell profile (e.g. export PATH="{bindir}:$PATH") and restart Claude Code.'
-            )
+        self.ensure_on_path(bindir)
+
+    def ensure_on_path(self, bindir):
+        """Offer to add bindir to the shell profile; the hooks call `handoff` by name."""
+        if bindir in os.environ.get("PATH", "").split(os.pathsep):
+            return
+        shown = "$HOME" + bindir[len(str(self.home)):] if bindir.startswith(str(self.home) + "/") else bindir
+        line = f'export PATH="{shown}:$PATH"'
+        restart = "Open a new terminal and restart Claude Code from it, so the hooks see the new PATH."
+        shell = Path(os.environ.get("SHELL", "")).name
+        profile = {"zsh": ".zshrc", "bash": ".bash_profile" if sys.platform == "darwin" else ".bashrc"}.get(shell)
+        if profile is None:
+            self.warn(f"{bindir} is not on PATH. Add it in your shell's startup file, then: {restart}")
+            return
+        profile = self.home / profile
+        if profile.exists() and line in profile.read_text():
+            self._out(f"PATH line already in {profile}. {restart}")
+            return
+        if not self.assume_yes and not self._ask(f"{bindir} is not on PATH. Add `{line}` to {profile}? [y/N] ").strip().lower().startswith("y"):
+            self.warn(f"{bindir} is not on PATH. Add `{line}` to {profile} yourself, then: {restart}")
+            return
+        with profile.open("a") as f:
+            f.write(f"\n# added by handoff setup\n{line}\n")
+        self._out(f"added `{line}` to {profile}. {restart}")
 
     def make_queue(self):
         self.step("3. Queue directory")

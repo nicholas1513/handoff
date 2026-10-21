@@ -19,8 +19,10 @@ through Claude**. Claude's sandbox blocks what it does: building into `~/go/bin`
 ```
 
 It does the following, and is safe to re-run:
-1. Builds `handoff` into `$(go env GOPATH)/bin` and warns if that folder isn't on PATH. The plugin
-   hooks call `handoff` by name, so it must be on the PATH Claude Code starts with.
+1. Builds `handoff` into `$(go env GOPATH)/bin`. If that folder isn't on PATH, it offers to add
+   `export PATH="$HOME/go/bin:$PATH"` to `~/.zshrc` (zsh), or to `~/.bash_profile` (bash on macOS)
+   or `~/.bashrc` (bash elsewhere). For other shells it prints what to add. The plugin hooks call
+   `handoff` by name, so after adding it, open a new terminal and restart Claude Code from it.
 2. Creates `~/.handoff/queue/`. The sandbox may only write *inside* that folder, so it can't create
    it.
 3. Adds `"~/.handoff/queue"` to `sandbox.filesystem.allowWrite` in `~/.claude/settings.json`. It
