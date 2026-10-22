@@ -153,7 +153,7 @@ func methodOf(argv []string) string {
 }
 
 func heading(title string) string {
-	return dim.Render("── ") + lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Render(title) + dim.Render(" ──")
+	return dim.Render("── ") + section.Render(title) + dim.Render(" ──")
 }
 
 func chip(text, color string) string {

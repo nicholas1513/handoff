@@ -294,10 +294,10 @@ func (m *model) itemPane(s *sessionRow, now time.Time) (rows []string, idx []int
 	n := s.nOut
 	for i, it := range s.items {
 		if i == 0 && n > 0 {
-			add(head.Render(fmt.Sprintf("Outstanding (%d)", n)), -1)
+			add(section.Render(fmt.Sprintf("Outstanding (%d)", n)), -1)
 		}
 		if i == n {
-			add(head.Render(fmt.Sprintf("Completed (%d)", len(s.items)-n)), -1)
+			add(section.Render(fmt.Sprintf("Completed (%d)", len(s.items)-n)), -1)
 		}
 		ts := it.Created
 		if i >= n {
@@ -502,7 +502,7 @@ var (
 	ok      = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	dim     = lipgloss.NewStyle().Faint(true)
 	bold    = lipgloss.NewStyle().Bold(true)
-	head    = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
+	section = lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Bold(true) // items-pane headers and detail headings
 )
 
 func (m model) View() string {
