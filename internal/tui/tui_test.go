@@ -337,6 +337,8 @@ func TestNewItemInOtherSessionDoesNotPull(t *testing.T) {
 }
 
 func TestFinishedItemsDimmed(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(old) })
 	lipgloss.SetColorProfile(termenv.ANSI)
 	_, m := setup(t)
 	m, _ = press(m, "x") // rejects "second"; "first" stays pending
@@ -353,5 +355,19 @@ func TestFinishedItemsDimmed(t *testing.T) {
 	const faint = "\x1b[2m"
 	if !strings.Contains(rej, faint) || strings.Contains(pend, faint) {
 		t.Fatalf("rejected %q, pending %q", rej, pend)
+	}
+}
+
+func TestStayOnFinishedWhileOthersPending(t *testing.T) {
+	_, m := setup(t)
+	m, _ = press(m, "x") // rejects "second", advances to "first"
+	m.focus = 1
+	m.move(-1)
+	if m.item().Description != "second" {
+		t.Fatalf("setup: selected %q, want second", m.item().Description)
+	}
+	m = tickM(m)
+	if m.item().Description != "second" {
+		t.Fatalf("tick dragged selection to %q", m.item().Description)
 	}
 }

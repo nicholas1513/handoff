@@ -113,8 +113,10 @@ func (m *model) item() *queue.Item {
 // refresh reloads the queue, keeping the selection on the same session and item ids.
 func (m *model) refresh() {
 	var keepS, keepI string
+	had := false // the kept session had a pending item before this reload
 	if s := m.session(); s != nil {
 		keepS = s.id
+		_, had = m.oldestPending(s)
 	}
 	if it := m.item(); it != nil {
 		keepI = it.ID
@@ -160,8 +162,8 @@ func (m *model) refresh() {
 	if keepI != "" && (m.item() == nil || m.item().ID != keepI) {
 		m.advancedAt = m.now() // the selection moved without the user: guard space like an advance
 	}
-	// a new item arriving after the selection finished pulls the selection onto it (same session only)
-	if it := m.item(); it != nil && !m.running {
+	// a new item arriving (none was pending before) after the selection finished pulls the selection onto it (same session only)
+	if it := m.item(); it != nil && !had && !m.running {
 		if st := m.q.State(*it, time.Now()); st != queue.Pending && st != queue.Running {
 			if best, ok := m.oldestPending(m.session()); ok {
 				m.ii, m.advancedAt, m.reviewed = best, m.now(), nil
