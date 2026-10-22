@@ -61,23 +61,24 @@ type runDone struct {
 }
 
 type model struct {
-	q        *queue.Queue
-	home     string
-	rows     []sessionRow
-	si, ii   int
-	focus    int // 0 sessions, 1 items, 2 detail
-	reviewed *queue.Reviewed
-	openErr  error
-	changed  bool // live item differs from the reviewed snapshot
-	confirm  bool // mouse: Run clicked, waiting for Yes
-	armed    bool // keyboard: one space pressed, waiting for the second
-	running  bool
-	scroll   int
-	itemTop  int // first items-pane row drawn
-	outTop   int // first Result output line drawn
-	status   string
-	w, h     int
-	titles   titleCache
+	q         *queue.Queue
+	home      string
+	rows      []sessionRow
+	si, ii    int
+	focus     int // 0 sessions, 1 items, 2 detail
+	reviewed  *queue.Reviewed
+	openErr   error
+	changed   bool // live item differs from the reviewed snapshot
+	confirm   bool // mouse: Run clicked, waiting for Yes
+	armed     bool // keyboard: one space pressed, waiting for the second
+	running   bool
+	scroll    int
+	itemTop   int // first items-pane row drawn
+	outTop    int // first Result output line drawn
+	promptTop int // first prompt line drawn
+	status    string
+	w, h      int
+	titles    titleCache
 
 	now        func() time.Time
 	advancedAt time.Time
@@ -204,7 +205,7 @@ func (m *model) open() {
 		return
 	}
 	r, err := m.q.Snapshot(it.ID)
-	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll, m.outTop = &r, err, false, false, false, 0, 0
+	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll, m.outTop, m.promptTop = &r, err, false, false, false, 0, 0, 0
 	if err != nil {
 		m.reviewed = nil
 	}
@@ -497,6 +498,10 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 			}
 			m.scrollOut(d)
 		}
+	case "{", "}":
+		if m.focus == 2 {
+			m.scrollBox(promptBox, map[string]int{"{": -1, "}": 1}[k]*m.promptCap())
+		}
 	case "o":
 		m.reviewed = nil
 		m.open()
@@ -523,8 +528,8 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if msg.Button == tea.MouseButtonWheelUp {
 			d = -1
 		}
-		if pane == 2 && m.inBox(msg.Y) {
-			m.scrollOut(3 * d)
+		if id, ok := m.boxAt(msg.Y); pane == 2 && ok {
+			m.scrollBox(id, 3*d)
 		} else {
 			m.move(d)
 		}
@@ -617,8 +622,11 @@ func (m model) View() string {
 	if m.focus > 0 && m.pending() {
 		keys = append(keys, "space space run", "x reject")
 	}
-	if _, framed := m.resultLines(); m.focus == 2 && framed {
+	if b, _ := m.box(resultBox); m.focus == 2 && b.framed {
 		keys = append(keys, "[ ] scroll output")
+	}
+	if b, _ := m.box(promptBox); m.focus == 2 && b.framed {
+		keys = append(keys, "{ } scroll prompt")
 	}
 	if m.changed {
 		keys = append(keys, "o re-open")
