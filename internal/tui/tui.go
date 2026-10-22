@@ -5,9 +5,7 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,7 +16,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/nicholas1513/handoff/internal/queue"
-	"github.com/nicholas1513/handoff/internal/rules"
 	"github.com/nicholas1513/handoff/internal/runner"
 )
 
@@ -444,87 +441,6 @@ func glyph(state string) string {
 }
 
 func oneLine(s string) string { return strings.ReplaceAll(sanitize(s), "\n", " ⏎ ") }
-
-func (m model) detail() string {
-	s := m.session()
-	if s != nil && s.invalid != nil && m.ii < len(s.invalid) {
-		_, err := m.q.Load(s.invalid[m.ii])
-		return warn.Render("This item failed to load and can't be run.") + "\n\n" + sanitize(fmt.Sprint(err))
-	}
-	if m.openErr != nil {
-		return warn.Render("Could not open item: ") + sanitize(m.openErr.Error())
-	}
-	if m.reviewed == nil {
-		return dim.Render("No items.")
-	}
-	it := m.reviewed.Item
-	var b strings.Builder
-	line := func(label, v string) { fmt.Fprintf(&b, "%s %s\n", bold.Render(label), v) }
-
-	state := m.q.State(it, time.Now())
-	if state == queue.Pending {
-		state += dim.Render(" · expires in " + strings.TrimSuffix(time.Until(it.Expires).Round(time.Minute).String(), "0s"))
-	}
-	line("State:", state)
-	if m.changed {
-		b.WriteString(warn.Render("Changed on disk after you opened it. Press o to review it again.") + "\n")
-	}
-	b.WriteString("\n" + sanitize(it.Description) + "\n\n")
-
-	project := it.Cwd
-	if s != nil && s.sess != nil {
-		line("Session:", ok.Render("✓ verified")+" "+sanitize(it.SessionID)+" in "+sanitize(s.sess.Cwd))
-		project = s.sess.Cwd
-		if p, err := m.q.PromptBefore(it.SessionID, it.Created); err == nil {
-			line("Prompt:", dim.Render(p.TS.Format("15:04:05")))
-			b.WriteString(sanitize(p.Prompt) + "\n\n")
-		} else {
-			line("Prompt:", warn.Render("none recorded"))
-		}
-	} else {
-		line("Session:", warn.Render("⚠ unverified session")+" "+sanitize(it.SessionID)+dim.Render(" (no hook record: provenance unknown)"))
-	}
-
-	settings := rules.Load(rules.DefaultFiles(m.home, project))
-	badge := settings.Check(it.Argv).String(m.home)
-	if it.Reason != "" {
-		badge += " · staged: " + sanitize(it.Reason)
-	}
-	line("Rule:", badge)
-	for _, p := range settings.Problems {
-		line("", warn.Render("settings problem: ")+sanitize(p))
-	}
-	if runner.RunsInterpreter(it.Argv) {
-		b.WriteString(warn.Render(fmt.Sprintf("⚠ runs an interpreter (%s): its arguments are code", sanitize(it.Argv[0]))) + "\n")
-	}
-	line("Cwd:", sanitize(it.Cwd))
-	line("Command:", "")
-	for _, a := range it.Argv {
-		fmt.Fprintf(&b, "  %q\n", a)
-	}
-	for _, name := range it.Files {
-		data, err := os.ReadFile(filepath.Join(m.reviewed.SnapDir, name))
-		if err != nil {
-			data = []byte(err.Error())
-		}
-		line("\nFile "+name+":", "")
-		b.WriteString(sanitize(string(data)) + "\n")
-	}
-	line("\nSHA-256:", dim.Render(m.reviewed.Hash))
-
-	if res, err := m.q.ReadResult(it); err == nil {
-		line("\nResult:", fmt.Sprintf("%s, exit %d at %s", res.State, res.ExitCode, res.RanAt.Format(time.Kitchen)))
-		if res.Stdout != "" {
-			b.WriteString(bold.Render("stdout") + "\n" + sanitize(res.Stdout) + "\n")
-		}
-		if res.Stderr != "" {
-			b.WriteString(bold.Render("stderr") + "\n" + sanitize(res.Stderr) + "\n")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		line("\nResult:", warn.Render(sanitize(err.Error())))
-	}
-	return b.String()
-}
 
 // sanitize escapes control and invisible formatting characters (ANSI escapes, carriage returns,
 // bidi overrides, zero-width spaces) so agent-written text can't fake or hide what's displayed.
