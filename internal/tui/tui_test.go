@@ -359,6 +359,9 @@ func TestFinishedItemsDimmed(t *testing.T) {
 	if !strings.Contains(rej, faint) || strings.Contains(pend, faint) {
 		t.Fatalf("rejected %q, pending %q", rej, pend)
 	}
+	if !strings.Contains(rej, "31m⊘") || !strings.Contains(pend, "33m●") {
+		t.Fatalf("glyphs not colored: rejected %q, pending %q", rej, pend)
+	}
 }
 
 func TestStayOnFinishedWhileOthersPending(t *testing.T) {

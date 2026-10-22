@@ -274,11 +274,17 @@ func stamp(t, now time.Time) string {
 
 // itemRow dims finished items (any state but pending/running).
 func itemRow(it queue.Item, st, ts string) string {
-	row := ts + "  " + glyph(st) + " " + oneLine(it.Description)
-	if !outstanding(st) {
-		return dim.Render(row)
+	g := lipgloss.NewStyle().Foreground(glyphColor[st])
+	if outstanding(st) {
+		return ts + "  " + g.Render(glyph(st)) + " " + oneLine(it.Description)
 	}
-	return row
+	// rendered piecewise: one dim.Render around a colored glyph would end the faint at the glyph's reset
+	return dim.Render(ts+"  ") + g.Faint(true).Render(glyph(st)) + dim.Render(" "+oneLine(it.Description))
+}
+
+var glyphColor = map[string]lipgloss.Color{
+	queue.Pending: "3", queue.Running: "3", queue.Succeeded: "2", queue.Failed: "1",
+	queue.Rejected: "1", queue.Modified: "1", queue.Expired: "8",
 }
 
 // itemPane is the items pane's rows plus, per row, the index of the item it shows (-1: a header).
