@@ -168,39 +168,104 @@ func (m model) detail() string {
 // outCap is the Result box height: 40% of the window, at least 3 lines.
 func (m model) outCap() int { return max(3, m.h*40/100) }
 
-// resultLines is the result's stdout and stderr, labelled and wrapped to the detail width, one entry per drawn line.
-func (m model) resultLines() []string {
+// boxBg is the framed Result box's panel colour, visibly lighter than the terminal's.
+var boxBg = lipgloss.AdaptiveColor{Light: "#e8e8ef", Dark: "#2a2e3f"}
+
+// resultLines is the result's stdout and stderr, labelled and wrapped, one entry per drawn line. framed reports that it
+// is longer than the cap, so it is drawn in the box and wrapped to its inner width (dw-6); otherwise it wraps to dw-2.
+func (m model) resultLines() (lines []string, framed bool) {
 	if m.reviewed == nil {
-		return nil
+		return nil, false
 	}
 	res, err := m.q.ReadResult(m.reviewed.Item)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	_, _, dw := columns(m.w)
-	var out []string
-	for _, st := range [][2]string{{"stdout", res.Stdout}, {"stderr", res.Stderr}} {
-		if st[1] != "" {
-			txt := ansi.Wrap(strings.ReplaceAll(sanitize(st[1]), "\t", "    "), dw-2, "")
-			out = append(out, bold.Render(st[0]))
-			out = append(out, strings.Split(strings.TrimSuffix(txt, "\n"), "\n")...)
+	wrap := func(w int) (out []string) {
+		for _, st := range [][2]string{{"stdout", res.Stdout}, {"stderr", res.Stderr}} {
+			if st[1] != "" {
+				txt := ansi.Wrap(strings.ReplaceAll(sanitize(st[1]), "\t", "    "), w, "")
+				out = append(out, bold.Render(st[0]))
+				out = append(out, strings.Split(strings.TrimSuffix(txt, "\n"), "\n")...)
+			}
+		}
+		return out
+	}
+	if out := wrap(max(1, dw-6)); len(out) > m.outCap() {
+		return out, true
+	}
+	return wrap(dw - 2), false
+}
+
+// scrollbar is one glyph per row of a cap-row window over total lines starting at top: a dim track and a thumb sized
+// and placed in proportion, touching the bottom at the last page. total <= cap gives an all-thumb bar.
+func scrollbar(cap, total, top int) []string {
+	thumb := cap
+	if total > cap {
+		thumb = max(1, min(cap, int(float64(cap*cap)/float64(total)+0.5)))
+	}
+	pos := 0
+	if total > cap {
+		pos = int(float64(top)*float64(cap-thumb)/float64(total-cap) + 0.5)
+		pos = max(0, min(pos, cap-thumb))
+	}
+	bar := make([]string, cap)
+	for i := range bar {
+		bar[i] = "│"
+		if i >= pos && i < pos+thumb {
+			bar[i] = "┃"
 		}
 	}
-	return out
+	return bar
+}
+
+// frame draws the visible slice of a long result as a scrollable panel: rounded border, scrollbar in the last
+// inner column, and the line range in the bottom border. Its width is dw-2, the detail wrap width.
+func (m model) frame(rows []string, top, total int) string {
+	_, _, dw := columns(m.w)
+	outer, inner := dw-2, dw-6
+	edge := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(boxBg)
+	txt := lipgloss.NewStyle().Background(boxBg)
+	thumb := lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Background(boxBg)
+	bar := scrollbar(len(rows), total, top)
+	out := []string{edge.Render("╭" + strings.Repeat("─", outer-2) + "╮")}
+	for i, l := range rows {
+		st := txt
+		if l != ansi.Strip(l) { // the stdout/stderr label
+			st = st.Bold(true)
+		}
+		l = ansi.Strip(l)
+		bs := edge
+		if bar[i] == "┃" {
+			bs = thumb
+		}
+		out = append(out, edge.Render("│")+st.Render(" "+l+strings.Repeat(" ", max(0, inner-lipgloss.Width(l))))+bs.Render(bar[i])+edge.Render("│"))
+	}
+	foot := ansi.Truncate(fmt.Sprintf("lines %d–%d of %d · [ ] or PgUp/PgDn", top+1, top+len(rows), total), outer-6, "…")
+	out = append(out, edge.Render("╰─ "+foot+" "+strings.Repeat("─", max(0, outer-6-lipgloss.Width(foot)))+"─╯"))
+	return strings.Join(out, "\n")
 }
 
 // scrollOut moves the Result box by d lines, clamped to its output.
 func (m *model) scrollOut(d int) {
-	m.outTop = max(0, min(m.outTop+d, len(m.resultLines())-m.outCap()))
+	out, _ := m.resultLines()
+	m.outTop = max(0, min(m.outTop+d, len(out)-m.outCap()))
 }
 
 // inBox reports whether screen row y is one of the Result box's drawn lines (body line k is at buttonY+1+k-scroll).
+// A framed box's border rows don't count.
 func (m model) inBox(y int) bool {
 	before, _, _ := m.detailParts()
 	wrap := m.wrapDetail
 	start := strings.Count(wrap(strings.TrimSuffix(before, "\n")), "\n") + 1
 	first := buttonY + 1 + start - m.bodyTop(len(m.detailLines()))
-	return y > buttonY && y >= first && y < first+min(m.outCap(), len(m.resultLines())) && y <= max(5, m.h-3)
+	out, framed := m.resultLines()
+	n := len(out)
+	if framed {
+		first, n = first+1, m.outCap()
+	}
+	return y > buttonY && y >= first && y < first+n && y <= max(5, m.h-3)
 }
 
 // bodyTop is the first detail line drawn: m.scroll, kept inside the n wrapped lines. View and inBox share it.
@@ -286,10 +351,11 @@ func (m model) detailParts() (before, box, after string) {
 	if res, err := m.q.ReadResult(it); err == nil {
 		p("\n%s", heading("Result"))
 		p("%s exit %d at %s", chip(strings.ToUpper(res.State), resColor(res.State)), res.ExitCode, res.RanAt.Format(time.Kitchen))
-		out := m.resultLines()
-		if n := m.outCap(); len(out) > n {
+		out, framed := m.resultLines()
+		if framed {
+			n := m.outCap()
 			top := max(0, min(m.outTop, len(out)-n))
-			out = append(out[top:top+n:top+n], dim.Render(fmt.Sprintf("lines %d–%d of %d", top+1, top+n, len(m.resultLines()))))
+			out = strings.Split(m.frame(out[top:top+n], top, len(out)), "\n")
 		}
 		box = strings.Join(out, "\n") + "\n"
 	} else if !errors.Is(err, os.ErrNotExist) {
