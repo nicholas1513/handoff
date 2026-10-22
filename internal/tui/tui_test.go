@@ -153,10 +153,27 @@ func TestSpaceCancelsMouseConfirm(t *testing.T) {
 
 func TestKeysDroppedWhileRunning(t *testing.T) {
 	_, m := setup(t)
-	m.running = true
 	m, _ = press(m, " ")
+	m.running = true
+	m, cmd := press(m, " ")
+	if !m.armed || cmd != nil {
+		t.Fatal("space must be dropped while running")
+	}
+	m.focus, m.ii = 1, 0
+	m, _ = press(m, "j")
+	if m.ii != 0 {
+		t.Fatal("navigation must be dropped while running")
+	}
+}
+
+func TestArmThenNotPendingLeavesNoStuckArm(t *testing.T) {
+	q, m := setup(t)
+	m, _ = press(m, " ")
+	if err := q.Claim(*m.item()); err != nil {
+		t.Fatal(err)
+	}
 	m, cmd := press(m, " ")
 	if m.armed || cmd != nil {
-		t.Fatal("keys must be dropped while running")
+		t.Fatal("arm must clear and nothing run when the item is no longer pending")
 	}
 }
