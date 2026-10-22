@@ -14,6 +14,8 @@ func TestCommandLinesShowEveryElementVerbatim(t *testing.T) {
 		{"curl", "--data", "-", "-X", "POST", "https://x.test/a"},
 		{"az", "rest", "--method=get", "--url=https://x.test/b"},
 		{"bash", "-c", "echo hi; rm -rf ~/x"},
+		{"--foo", "bar"},
+		{"-X", "POST", "https://x.test"},
 	}
 	for _, argv := range cases {
 		got := flatten(strings.Join(commandLines(argv, map[string]int{"body.json": 6100}), "\n"))
@@ -42,5 +44,12 @@ func TestAttachmentDecoration(t *testing.T) {
 		if !strings.Contains(got, w) {
 			t.Errorf("%q missing from %q", w, got)
 		}
+	}
+}
+
+func TestEmptyArgIsVisible(t *testing.T) {
+	got := flatten(strings.Join(commandLines([]string{"curl", "--data", "", "https://x.test"}, nil), "\n"))
+	if !strings.Contains(got, `--data  ""`) && !strings.Contains(got, `--data ""`) {
+		t.Errorf("empty value not shown as \"\": %q", got)
 	}
 }
