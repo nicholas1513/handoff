@@ -593,3 +593,20 @@ func TestClickBelowDrawnListDoesNothing(t *testing.T) {
 		t.Fatal("sessions click below the list moved the session")
 	}
 }
+
+func TestSectionHeadersShareOneStyle(t *testing.T) {
+	old := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(old) })
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	_, m := setup(t)
+	rows, _ := m.itemPane(m.session(), time.Now())
+	if rows[0] != section.Render("Outstanding (2)") {
+		t.Fatalf("items header %q", rows[0])
+	}
+	if !strings.Contains(heading("Command"), section.Render("Command")) {
+		t.Fatalf("detail heading %q", heading("Command"))
+	}
+	if section.GetForeground() != lipgloss.Color("#7aa2f7") {
+		t.Fatalf("section color %v", section.GetForeground())
+	}
+}
