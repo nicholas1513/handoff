@@ -61,7 +61,14 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   run in the background. Attachments are referred to in argv as `{file:name}`. See
   `plugin/skills/handoff/SKILL.md`.
 - **You:** run `handoff` (or `! handoff` from the Claude prompt). Sessions | items | detail.
-  `r` or click **Run** (then confirm), `x` or **Reject**, `o` re-open after a change, `q` quit.
+  Press `space` twice to run the selected item (any other key cancels), or click **Run** (then
+  confirm). `r` is an alias for the first `space`. `x` or **Reject**, `o` re-open after a change,
+  `q` quit. After a run or reject, the selection jumps to the oldest pending item in the same
+  session, and `space` is ignored for a second after the jump, so a stray key can't run it.
+  The sessions pane shows each session's `/resume` title (a custom `/rename` title wins), its
+  folder, age and pending count. The detail pane is in sections: status chips, description,
+  warnings, Command (one flag per line, every word verbatim), Why, attached files, Integrity and
+  Result.
 
 ## Security model
 
