@@ -71,7 +71,10 @@ Order, top to bottom:
    go on the first line in cyan. After that, each flag goes on its own line in purple, with its
    value aligned in a column. A value that starts with `-` is still a value if it follows a flag
    that takes one; when that's ambiguous, show each word on its own line rather than guess wrong.
-   Positional arguments after the flags go on their own lines. URLs: host and the last path
+   Positional arguments go on their own lines **in their original argv position** (changed by
+   the final review: reordering misled the reader for `docker run … rm -rf /`). A word that is
+   empty or contains whitespace or `"` is shown Go-quoted, so an embedded newline can't draw a
+   fake flag line. The method chip uses the **last** `--method`/`-X`, as CLIs do. URLs: host and the last path
    segment in teal, the middle dimmed, wrapped onto continuation lines rather than truncated.
    `{file:name}` references show as `📎 name` in orange, with the size and "(attached, see
    below)".
