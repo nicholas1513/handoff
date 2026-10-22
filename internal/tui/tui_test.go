@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -932,16 +933,29 @@ func TestDetailScrollStopsAtEnd(t *testing.T) {
 	_, m := setup(t)
 	m = withItem(t, m, queue.Item{Description: "long", Argv: []string{"/usr/bin/true", "--body", "@{file:a.txt}"}}, map[string]string{"a.txt": longFile(t, 200)}, 120)
 	m.focus = 2
+	scrollToEnd(t, m, m.detailLines())
+}
+
+func TestDetailScrollStopsAtEndOfLongError(t *testing.T) {
+	_, m := setup(t)
+	m.openErr = errors.New(strings.Repeat("word ", 1000) + "THE-END")
+	m.focus = 2
+	scrollToEnd(t, m, m.detailLines())
+}
+
+// scrollToEnd presses down far past the end: scroll must stop at lines-(visible body), and the last real line must be drawn.
+func scrollToEnd(t *testing.T, m model, lines []string) {
+	t.Helper()
 	for i := 0; i < 400; i++ {
 		m, _ = press(m, "j")
 	}
-	lines := strings.Split(lipgloss.NewStyle().Width(columnsDW(m)-2).Render(m.detail()), "\n")
-	want := len(lines) - (max(5, m.h-3) - 1)
+	want := len(lines) - (max(5, m.h-3) - 2)
 	if m.scroll != want || want <= 0 {
 		t.Fatalf("scroll %d, want %d", m.scroll, want)
 	}
-	if !strings.Contains(ansi.Strip(m.View()), strings.TrimSpace(ansi.Strip(lines[len(lines)-1]))) {
-		t.Fatal("last detail line not on screen")
+	last := strings.TrimSpace(ansi.Strip(lines[len(lines)-1]))
+	if last == "" || !strings.Contains(ansi.Strip(m.View()), last) {
+		t.Fatalf("last detail line %q not on screen", last)
 	}
 }
 
