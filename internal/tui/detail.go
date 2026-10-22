@@ -160,42 +160,93 @@ func chip(text, color string) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(text)
 }
 
+// seg is one run of the detail: plain text, or a scrollable box that is framed only when it exceeds its cap.
+type seg struct {
+	text string
+	box  *box
+}
+
+type box struct {
+	id       string
+	lines    []string // one per drawn line, wrapped to the inner width when framed
+	framed   bool
+	cap, top int
+	hint     string // footer key hint
+}
+
+const (
+	resultBox = "result"
+	promptBox = "prompt"
+)
+
 func (m model) detail() string {
-	before, box, after := m.detailParts()
-	return before + box + after
+	var b strings.Builder
+	for _, s := range m.detailSegs() {
+		b.WriteString(s.text)
+		if s.box != nil {
+			b.WriteString(m.render(*s.box))
+		}
+	}
+	return b.String()
 }
 
 // outCap is the Result box height: 40% of the window, at least 3 lines.
 func (m model) outCap() int { return max(3, m.h*40/100) }
 
-// boxBg is the framed Result box's panel colour, visibly lighter than the terminal's.
+// promptCap is the prompt box height: 20% of the window, at least 3 lines.
+func (m model) promptCap() int { return max(3, m.h*20/100) }
+
+// boxBg is the framed box's panel colour, visibly lighter than the terminal's.
 var boxBg = lipgloss.AdaptiveColor{Light: "#e8e8ef", Dark: "#2a2e3f"}
 
-// resultLines is the result's stdout and stderr, labelled and wrapped, one entry per drawn line. framed reports that it
-// is longer than the cap, so it is drawn in the box and wrapped to its inner width (dw-6); otherwise it wraps to dw-2.
-func (m model) resultLines() (lines []string, framed bool) {
-	if m.reviewed == nil {
-		return nil, false
-	}
-	res, err := m.q.ReadResult(m.reviewed.Item)
-	if err != nil {
-		return nil, false
-	}
+// mkBox wraps its text with wrap(width): to the inner width (dw-6) and framed when that is longer than cap, else
+// plainly to dw-2. top is clamped to the lines.
+func (m model) mkBox(id string, wrap func(w int) []string, cap, top int, hint string) box {
 	_, _, dw := columns(m.w)
-	wrap := func(w int) (out []string) {
-		for _, st := range [][2]string{{"stdout", res.Stdout}, {"stderr", res.Stderr}} {
-			if st[1] != "" {
-				txt := ansi.Wrap(strings.ReplaceAll(sanitize(st[1]), "\t", "    "), w, "")
-				out = append(out, bold.Render(st[0]))
-				out = append(out, strings.Split(strings.TrimSuffix(txt, "\n"), "\n")...)
-			}
+	if l := wrap(max(1, dw-6)); len(l) > cap {
+		return box{id, l, true, cap, max(0, min(top, len(l)-cap)), hint}
+	}
+	return box{id: id, lines: wrap(dw - 2), cap: cap, hint: hint}
+}
+
+// render draws a box and its trailing newline: the framed window, or the plain lines.
+func (m model) render(b box) string {
+	if !b.framed {
+		return strings.Join(b.lines, "\n") + "\n"
+	}
+	return m.frame(b.lines[b.top:b.top+b.cap], b.top, len(b.lines), b.hint) + "\n"
+}
+
+// boxes is the framed boxes' first content row in the wrapped detail, and their ids and caps.
+func (m model) boxes() (out []struct {
+	id         string
+	first, cap int
+}) {
+	n := 0
+	for _, s := range m.detailSegs() {
+		if s.box == nil {
+			n += strings.Count(m.wrapDetail(strings.TrimSuffix(s.text, "\n")), "\n") + 1
+		} else if s.box.framed {
+			out = append(out, struct {
+				id         string
+				first, cap int
+			}{s.box.id, n + 1, s.box.cap})
+			n += s.box.cap + 2
+		} else {
+			n += max(1, len(s.box.lines))
 		}
-		return out
 	}
-	if out := wrap(max(1, dw-6)); len(out) > m.outCap() {
-		return out, true
+	return
+}
+
+// box returns the box with that id, if drawn.
+func (m model) box(id string) (box, bool) {
+	for _, s := range m.detailSegs() {
+		if s.box != nil && s.box.id == id {
+			return *s.box, true
+		}
 	}
-	return wrap(dw - 2), false
+	return box{}, false
 }
 
 // scrollbar is one glyph per row of a cap-row window over total lines starting at top: a dim track and a thumb sized
@@ -222,7 +273,7 @@ func scrollbar(cap, total, top int) []string {
 
 // frame draws the visible slice of a long result as a scrollable panel: rounded border, scrollbar in the last
 // inner column, and the line range in the bottom border. Its width is dw-2, the detail wrap width.
-func (m model) frame(rows []string, top, total int) string {
+func (m model) frame(rows []string, top, total int, hint string) string {
 	_, _, dw := columns(m.w)
 	outer, inner := dw-2, dw-6
 	edge := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(boxBg)
@@ -242,33 +293,40 @@ func (m model) frame(rows []string, top, total int) string {
 		}
 		out = append(out, edge.Render("│")+st.Render(" "+l+strings.Repeat(" ", max(0, inner-lipgloss.Width(l))))+bs.Render(bar[i])+edge.Render("│"))
 	}
-	foot := ansi.Truncate(fmt.Sprintf("lines %d–%d of %d · [ ] or PgUp/PgDn", top+1, top+len(rows), total), outer-6, "…")
+	foot := ansi.Truncate(fmt.Sprintf("lines %d–%d of %d · %s", top+1, top+len(rows), total, hint), outer-6, "…")
 	out = append(out, edge.Render("╰─ "+foot+" "+strings.Repeat("─", max(0, outer-6-lipgloss.Width(foot)))+"─╯"))
 	return strings.Join(out, "\n")
 }
 
-// scrollOut moves the Result box by d lines, clamped to its output.
-func (m *model) scrollOut(d int) {
-	out, _ := m.resultLines()
-	m.outTop = max(0, min(m.outTop+d, len(out)-m.outCap()))
-}
-
-// inBox reports whether screen row y is one of the Result box's drawn lines (body line k is at buttonY+1+k-scroll).
-// A framed box's border rows don't count.
-func (m model) inBox(y int) bool {
-	before, _, _ := m.detailParts()
-	wrap := m.wrapDetail
-	start := strings.Count(wrap(strings.TrimSuffix(before, "\n")), "\n") + 1
-	first := buttonY + 1 + start - m.bodyTop(len(m.detailLines()))
-	out, framed := m.resultLines()
-	n := len(out)
-	if framed {
-		first, n = first+1, m.outCap()
+// scrollBox moves the box with that id by d lines, clamped to its text.
+func (m *model) scrollBox(id string, d int) {
+	b, ok := m.box(id)
+	if !ok {
+		return
 	}
-	return y > buttonY && y >= first && y < first+n && y <= max(5, m.h-3)
+	top := &m.outTop
+	if id == promptBox {
+		top = &m.promptTop
+	}
+	*top = max(0, min(*top+d, len(b.lines)-b.cap))
 }
 
-// bodyTop is the first detail line drawn: m.scroll, kept inside the n wrapped lines. View and inBox share it.
+func (m *model) scrollOut(d int) { m.scrollBox(resultBox, d) }
+
+// boxAt reports which framed box has screen row y as one of its content rows (body line k is at buttonY+1+k-scroll).
+// Border rows don't count.
+func (m model) boxAt(y int) (string, bool) {
+	top := m.bodyTop(len(m.detailLines()))
+	for _, b := range m.boxes() {
+		first := buttonY + 1 + b.first - top
+		if y > buttonY && y >= first && y < first+b.cap && y <= max(5, m.h-3) {
+			return b.id, true
+		}
+	}
+	return "", false
+}
+
+// bodyTop is the first detail line drawn: m.scroll, kept inside the n wrapped lines. View and boxAt share it.
 func (m model) bodyTop(n int) int { return min(m.scroll, max(0, n-1)) }
 
 // wrapDetail wraps s to the detail pane's text width.
@@ -277,7 +335,7 @@ func (m model) wrapDetail(s string) string {
 	return lipgloss.NewStyle().Width(dw - 2).Render(s)
 }
 
-// detailLines is the wrapped detail, one entry per drawn line. View, inBox and clampScroll share it.
+// detailLines is the wrapped detail, one entry per drawn line. View, boxAt and clampScroll share it.
 func (m model) detailLines() []string {
 	return strings.Split(m.wrapDetail(strings.TrimSuffix(m.detail(), "\n")), "\n")
 }
@@ -287,24 +345,32 @@ func (m *model) clampScroll() {
 	m.scroll = max(0, min(m.scroll, len(m.detailLines())-(max(5, m.h-3)-2)))
 }
 
-// detailParts is the detail text in three runs: everything before the Result box (for a finished item that ends with the
-// Result heading and exit line), the box and its footer, then the rest (Command onward). Pending: box is empty.
-func (m model) detailParts() (before, box, after string) {
+// detailSegs is the detail in order: text runs and the Result and prompt boxes.
+func (m model) detailSegs() []seg {
 	s := m.session()
 	if s != nil && s.invalid != nil && m.ii < len(s.invalid) {
 		_, err := m.q.Load(s.invalid[m.ii])
-		return warn.Render("This item failed to load and can't be run.") + "\n\n" + sanitize(fmt.Sprint(err)), "", ""
+		return []seg{{text: warn.Render("This item failed to load and can't be run.") + "\n\n" + sanitize(fmt.Sprint(err))}}
 	}
 	if m.openErr != nil {
-		return warn.Render("Could not open item: ") + sanitize(m.openErr.Error()), "", ""
+		return []seg{{text: warn.Render("Could not open item: ") + sanitize(m.openErr.Error())}}
 	}
 	if m.reviewed == nil {
-		return dim.Render("No items."), "", ""
+		return []seg{{text: dim.Render("No items.")}}
 	}
 	it := m.reviewed.Item
-	var b, a strings.Builder
-	w := &b
-	p := func(format string, args ...any) { fmt.Fprintf(w, format+"\n", args...) }
+	var b strings.Builder
+	var segs []seg
+	p := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
+	addBox := func(x box) {
+		segs = append(segs, seg{text: b.String()}, seg{box: &x})
+		b.Reset()
+	}
+	wrapText := func(txt string) func(int) []string {
+		return func(w int) []string {
+			return strings.Split(strings.TrimSuffix(ansi.Wrap(strings.ReplaceAll(txt, "\t", "    "), w, ""), "\n"), "\n")
+		}
+	}
 
 	state := m.q.State(it, time.Now())
 	chips := []string{chip(strings.ToUpper(state), resColor(state))}
@@ -351,18 +417,19 @@ func (m model) detailParts() (before, box, after string) {
 	if res, err := m.q.ReadResult(it); err == nil {
 		p("\n%s", heading("Result"))
 		p("%s exit %d at %s", chip(strings.ToUpper(res.State), resColor(res.State)), res.ExitCode, res.RanAt.Format(time.Kitchen))
-		out, framed := m.resultLines()
-		if framed {
-			n := m.outCap()
-			top := max(0, min(m.outTop, len(out)-n))
-			out = strings.Split(m.frame(out[top:top+n], top, len(out)), "\n")
-		}
-		box = strings.Join(out, "\n") + "\n"
+		addBox(m.mkBox(resultBox, func(w int) (out []string) {
+			for _, st := range [][2]string{{"stdout", res.Stdout}, {"stderr", res.Stderr}} {
+				if st[1] != "" {
+					out = append(out, bold.Render(st[0]))
+					out = append(out, wrapText(sanitize(st[1]))(w)...)
+				}
+			}
+			return out
+		}, m.outCap(), m.outTop, "[ ] or PgUp/PgDn"))
 	} else if !errors.Is(err, os.ErrNotExist) {
 		p("\n%s", heading("Result"))
 		p("%s", warn.Render(sanitize(err.Error())))
 	}
-	w = &a
 
 	sizes := map[string]int{}
 	for _, name := range it.Files {
@@ -378,7 +445,8 @@ func (m model) detailParts() (before, box, after string) {
 	p("\n%s", heading("Why"))
 	if verified {
 		if pr, err := m.q.PromptBefore(it.SessionID, it.Created); err == nil {
-			p("%s you said: %s", dim.Render(pr.TS.Format("15:04")), sanitize(pr.Prompt))
+			p("%s you said:", dim.Render(pr.TS.Format("15:04")))
+			addBox(m.mkBox(promptBox, wrapText(sanitize(pr.Prompt)), m.promptCap(), m.promptTop, "{ }"))
 		} else {
 			p("%s", warn.Render("no prompt recorded"))
 		}
@@ -422,7 +490,7 @@ func (m model) detailParts() (before, box, after string) {
 	}
 	p("%s\n%s", dim.Render("combined (internal; not comparable to shasum)"), dim.Render(m.reviewed.Hash))
 
-	return b.String(), box, a.String()
+	return append(segs, seg{text: b.String()})
 }
 
 // resColor: pending yellow, succeeded green, anything else (failed, rejected) red.
