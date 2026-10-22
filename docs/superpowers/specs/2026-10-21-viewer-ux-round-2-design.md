@@ -149,6 +149,15 @@ The items pane is split under two headers, each with a count. A header is hidden
 - **Revised after real use (user decision):** for an item that has a result, the Result section (its heading, the exit line, the
   capped box and the footer) comes right after the chips, the description and the warnings, ahead of Command / Why / attachments /
   Integrity. Otherwise the box sat below the visible pane and the cap looked like it did nothing. Pending items keep the old order.
+- **The box must look scrollable (user decision, after real use):** when the output is longer than the cap, the box is drawn as a
+  container:
+  - a rounded border;
+  - a background visibly lighter than the terminal's (adaptive: lighter on dark terminals, slightly darker-tinted on light ones);
+  - a one-column scrollbar inside the right edge (a track plus a thumb whose size and position show the visible fraction and offset);
+  - the bottom border carrying `lines A–B of T · [ ] or PgUp/PgDn`;
+  - `[ ] scroll output` on the status line while the detail pane is focused and the box has more to show.
+  Output that fits is drawn plain, as before. The output is wrapped to the inner width (inside the border, padding and scrollbar), so
+  nothing is cut off.
 - **Whole-pane scroll is bounded:** ↑↓ on the detail pane stop when the last line reaches the pane's bottom, so content that fits
   doesn't scroll at all.
 
