@@ -26,6 +26,15 @@ anti-goals and its "Calls made after the builder check" section are requirements
 - Mouse geometry constants (`listTop`, `buttonY`, `runX`, `rejectX`, `cancelX`, `yesX`) keep their values, and the button row stays the detail pane's first line.
 - Out of scope: approve-once rules, cwd warnings, and any change outside `internal/tui`.
 
+## Relation to the v2 roadmap (`~/.claude/plans/handoff-tool.md`, deferred items in `handoff-tool-v1.md`)
+
+This round builds none of the v2 items. It's checked against them so they still fit afterwards:
+- **Batches (`b` key, one confirm after scrolling every item, stop at the first failure):** `b` stays unbound. Auto-advance and `space space` are single-item. A later batch run should reuse the keyboard-arm state (`armed`) rather than add a third confirm path.
+- **Remembered auto-rules (`~/.config/handoff/rules.toml`, written only from viewer clicks; tabled again 2026-10-21):** the chips line in Task 3 is where an "approved by rule" chip would go. Nothing here reads or writes rules.
+- **fsnotify instead of the 2s tick:** auto-advance relies only on `refresh` keeping the selection by item ID, which holds whatever triggers the refresh. The title cache keys on mtime and size, so it works either way.
+- **`gc`:** unaffected. The "drop keys while running" guard is the in-memory `m.running`, not the on-disk `running` state that `gc` would clear.
+- **Configurable expiry and Homebrew:** unaffected.
+
 ## Review Focus
 
 1. **A transcript that's mid-write or malformed** (a truncated last line, non-JSON lines) must give the last good title, not an error. Tested in Task 1.
