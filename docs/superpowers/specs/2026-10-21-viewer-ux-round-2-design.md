@@ -158,6 +158,12 @@ The items pane is split under two headers, each with a count. A header is hidden
   - `[ ] scroll output` on the status line while the detail pane is focused and the box has more to show.
   Output that fits is drawn plain, as before. The output is wrapped to the inner width (inside the border, padding and scrollbar), so
   nothing is cut off.
+- **Why section prompt box (user decision):** the recorded prompt text in Why is capped at **20% of the window height**, using
+  the same framed, scrollable panel as Result (border, lighter background, scrollbar, keys in the footer), only when it's longer than
+  the cap. The `✓ verified` session id and cwd, and the reason/rule/cwd line, are never inside the box and always show in full.
+  Keys with the detail pane focused: `{` / `}` scroll the prompt box, and `[` `]` / PgUp / PgDn stay with Result. The mouse wheel scrolls
+  whichever box it is over. The footer reads `lines A–B of T · { }`. The status line adds `{ } scroll prompt` when that box is
+  framed. The box scroll resets on a different item.
 - **Whole-pane scroll is bounded:** ↑↓ on the detail pane stop when the last line reaches the pane's bottom, so content that fits
   doesn't scroll at all.
 
