@@ -73,10 +73,9 @@ type model struct {
 	armed    bool // keyboard: one space pressed, waiting for the second
 	running  bool
 	scroll   int
-	itemTop  int             // first items-pane row drawn
-	boxTop   map[string]int  // first line drawn per box id ("result", "prompt", "file:<name>"); copied on write
-	boxSel   string          // selected box; "" or an unframed id means the first framed box
-	seenEnd  map[string]bool // attachment boxes scrolled to their last line; copied on write
+	itemTop  int            // first items-pane row drawn
+	boxTop   map[string]int // first line drawn per box id ("result", "prompt", "file:<name>"); copied on write
+	boxSel   string         // selected box; "" or an unframed id means the first framed box
 	status   string
 	w, h     int
 	titles   titleCache
@@ -207,11 +206,10 @@ func (m *model) open() {
 	}
 	r, err := m.q.Snapshot(it.ID)
 	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll = &r, err, false, false, false, 0
-	m.boxTop, m.boxSel, m.seenEnd = nil, "", nil
+	m.boxTop, m.boxSel = nil, ""
 	if err != nil {
 		m.reviewed = nil
 	}
-	m.markSeen()
 }
 
 func (m *model) move(d int) {
@@ -542,9 +540,6 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft:
 	case pane == 2 && msg.Y == buttonY:
 		x := msg.X - sw - iw
-		if m.confirm {
-			x -= lipgloss.Width(m.warnPrefix()) // the confirm row is drawn after it, so its buttons shift with it
-		}
 		switch {
 		case m.confirm && x >= cancelX && x < cancelX+10:
 			m.confirm = false
@@ -619,9 +614,9 @@ func (m model) View() string {
 	if m.pending() {
 		header = runBtn
 		if m.confirm {
-			header = warn.Render(m.warnPrefix() + confirmBtn)
+			header = warn.Render(confirmBtn)
 		} else if m.armed {
-			header = warn.Render(m.warnPrefix() + armedBtn)
+			header = warn.Render(armedBtn)
 		}
 	}
 	body := m.detailLines()

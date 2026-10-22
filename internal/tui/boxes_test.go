@@ -222,44 +222,6 @@ func TestWheelSelectsAndScrollsBoxUnderIt(t *testing.T) {
 	}
 }
 
-func TestNotFullyViewedChipAndArmPrompt(t *testing.T) {
-	_, m := setup(t)
-	m = withAtt(t, m, 0, 0, 198, 40)
-	chips := func(m model) string { return strings.SplitN(ansi.Strip(m.detail()), "\n", 2)[0] }
-	if c := chips(m); !strings.Contains(c, "📎 body.json not fully viewed") {
-		t.Fatalf("chip missing: %q", c)
-	}
-	m, _ = press(m, " ")
-	if v := ansi.Strip(m.View()); !m.armed || !strings.Contains(v, "⚠ not fully viewed: body.json · space again to run") {
-		t.Fatalf("armed prompt lacks the warning:\n%s", v)
-	}
-	m, _ = press(m, "z") // cancels
-	for i := 0; i < 30; i++ {
-		m, _ = press(m, "]")
-		if !strings.Contains(chips(m), "not fully viewed") && !lastDrawn(m) {
-			t.Fatal("chip cleared before the last row was drawn")
-		}
-	}
-	m, _ = press(m, "[") // back up: once seen to the end it stays seen
-	if c := chips(m); strings.Contains(c, "not fully viewed") {
-		t.Fatalf("chip after scrolling to the end: %q", c)
-	}
-	m, _ = press(m, " ")
-	if v := ansi.Strip(m.View()); !strings.Contains(v, armedBtn) || strings.Contains(v, "not fully viewed") {
-		t.Fatalf("armed prompt after viewing:\n%s", v)
-	}
-
-	_, s := setup(t)
-	s = withAtt(t, s, 0, 0, 1, 40)
-	if c := chips(s); strings.Contains(c, "not fully viewed") || len(frames(s)) != 0 {
-		t.Fatalf("short attachment warned or framed: %q", c)
-	}
-	s, _ = press(s, " ")
-	if v := ansi.Strip(s.View()); !strings.Contains(v, armedBtn) {
-		t.Fatalf("short attachment armed prompt:\n%s", v)
-	}
-}
-
 func TestBoxStateResetsOnNewItem(t *testing.T) {
 	trueColor(t)
 	_, m := setup(t)
@@ -273,7 +235,7 @@ func TestBoxStateResetsOnNewItem(t *testing.T) {
 	if !lastDrawn(m) {
 		t.Fatal("last attachment row never drawn")
 	}
-	if f := frames(m); len(f) != 3 || !f[2].sel || f[2].top == 0 || strings.Contains(ansi.Strip(m.detail()), "not fully viewed") {
+	if f := frames(m); len(f) != 3 || !f[2].sel || f[2].top == 0 {
 		t.Fatalf("setup: %+v", f)
 	}
 	m.focus = 1
@@ -285,115 +247,7 @@ func TestBoxStateResetsOnNewItem(t *testing.T) {
 	if f := frames(m); len(f) != 3 || !f[0].sel || f[1].sel || f[2].sel || f[0].top+f[1].top+f[2].top != 0 {
 		t.Fatalf("after reopening: %+v", f)
 	}
-	if !strings.Contains(ansi.Strip(m.detail()), "📎 body.json not fully viewed") {
-		t.Fatal("seen state kept across items")
-	}
 }
 
 // lastDrawn reports whether body.json's last line, the closing brace, is drawn inside its frame on screen.
 func lastDrawn(m model) bool { return strings.Contains(ansi.Strip(m.View()), "││ }") }
-
-func TestBlindBoxScrollIsNotViewing(t *testing.T) {
-	_, m := setup(t)
-	m = withAtt(t, m, 100, 0, 198, 40)
-	sw, iw, _ := columns(m.w)
-	y := -1
-	for r := 0; r < m.h && y < 0; r++ {
-		if id, ok := m.boxAt(r); ok && id == "file:body.json" {
-			y = r
-		}
-	}
-	if y < 0 || lastDrawn(m) {
-		t.Fatalf("precondition: attachment top on screen (row %d) and its bottom below the fold", y)
-	}
-	for i := 0; i < 100; i++ { // wheel the box to its end through its visible top
-		n, _ := m.Update(tea.MouseMsg{X: sw + iw + 5, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
-		m = n.(model)
-	}
-	if f := frames(m); f[1].top+12 != f[1].total || !strings.Contains(ansi.Strip(m.detail()), "📎 body.json not fully viewed") {
-		t.Fatalf("wheeled to the end off-screen and the chip cleared: %+v", f)
-	}
-	m.scrollBox("file:body.json", 1<<20) // a blind scroll straight to the end
-	if !strings.Contains(ansi.Strip(m.detail()), "not fully viewed") {
-		t.Fatal("blind scroll cleared the chip")
-	}
-	for i := 0; i < 30 && !lastDrawn(m); i++ {
-		m, _ = press(m, "j") // scroll the pane
-		if !lastDrawn(m) && !strings.Contains(ansi.Strip(m.detail()), "not fully viewed") {
-			t.Fatal("chip cleared before the last row was drawn")
-		}
-	}
-	if !lastDrawn(m) || strings.Contains(ansi.Strip(m.detail()), "not fully viewed") {
-		t.Fatal("drawing the last row did not clear the chip")
-	}
-}
-
-func TestUnframedThenFramedWarns(t *testing.T) {
-	_, m := setup(t)
-	m = withAtt(t, m, 0, 0, 40, 200)
-	if len(frames(m)) != 0 || strings.Contains(ansi.Strip(m.detail()), "not fully viewed") {
-		t.Fatal("precondition: unframed and no chip at h=200")
-	}
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	if m = next.(model); len(frames(m)) != 1 || !strings.Contains(ansi.Strip(m.detail()), "📎 body.json not fully viewed") {
-		t.Fatal("framed attachment never viewed to its end shows no chip")
-	}
-}
-
-func TestNarrowPaneKeepsArmedWarning(t *testing.T) {
-	_, m := setup(t)
-	m = withAtt(t, m, 0, 0, 198, 40)
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
-	m = next.(model)
-	m, _ = press(m, " ")
-	if h := strings.Split(ansi.Strip(m.View()), "\n")[buttonY]; !strings.Contains(h, "not fully viewed") {
-		t.Fatalf("armed header at width 80: %q", h)
-	}
-	m, _ = press(m, "z")
-	sw, iw, _ := columns(m.w)
-	m, _ = click(m, sw+iw+runX+1, buttonY)
-	if h := strings.Split(ansi.Strip(m.View()), "\n")[buttonY]; !m.confirm || !strings.Contains(h, "not fully viewed") {
-		t.Fatalf("confirm header at width 80: %q", h)
-	}
-}
-
-// The confirm row is drawn after the warning; its click targets must be where its buttons are drawn.
-func TestConfirmClickTargetsFollowWarning(t *testing.T) {
-	q, m := setup(t)
-	m = withAtt(t, m, 0, 0, 198, 40)
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 260, Height: 40})
-	m = next.(model)
-	m, _ = press(m, " ")
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "⚠ not fully viewed: body.json · space again to run · any other key cancels") {
-		t.Fatalf("full armed prompt:\n%s", v)
-	}
-	m, _ = press(m, "z")
-	sw, iw, _ := columns(m.w)
-	at := func(m model, label string) int {
-		h := strings.Split(ansi.Strip(m.View()), "\n")[buttonY]
-		i := strings.Index(h, label)
-		if i < 0 {
-			t.Fatalf("%q not drawn in %q", label, h)
-		}
-		return ansi.StringWidth(h[:i])
-	}
-	m, _ = click(m, sw+iw+runX+1, buttonY)
-	if !m.confirm {
-		t.Fatal("Run click did not ask")
-	}
-	if c, cmd := click(m, sw+iw+yesX+1, buttonY); cmd != nil || !c.confirm {
-		t.Fatal("the unshifted Yes position still runs")
-	}
-	if c, _ := click(m, at(m, "[ Cancel ]")+1, buttonY); c.confirm {
-		t.Fatal("click on the drawn Cancel did not cancel")
-	}
-	it := *m.item()
-	m, cmd := click(m, at(m, "[ Yes, run ]")+1, buttonY)
-	if cmd == nil {
-		t.Fatal("click on the drawn Yes did not run")
-	}
-	m.Update(cmd())
-	if s := q.State(it, time.Now()); s == queue.Pending { // az may not exist here: ran is enough
-		t.Fatalf("state %s", s)
-	}
-}
