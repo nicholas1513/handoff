@@ -46,9 +46,11 @@ func columns(w int) (sessions, items, detail int) {
 
 type sessionRow struct {
 	id      string
-	sess    *queue.Session // nil: no hook record, so unverified
-	items   []queue.Item   // display order: outstanding oldest first, then completed newest-finished first
-	invalid []string       // only on the "invalid" pseudo-session
+	sess    *queue.Session       // nil: no hook record, so unverified
+	items   []queue.Item         // display order: outstanding oldest first, then completed newest-finished first
+	invalid []string             // only on the "invalid" pseudo-session
+	nOut    int                  // items[:nOut] are outstanding; fixed at refresh so headers don't move between paint and click
+	fin     map[string]time.Time // finish time per completed item, snapshot at refresh
 }
 
 type tickMsg time.Time
@@ -142,7 +144,7 @@ func (m *model) refresh() {
 	}
 	m.rows = m.rows[:0]
 	for _, r := range rows {
-		m.sortItems(r.items)
+		r.nOut, r.fin = m.sortItems(r.items)
 		m.rows = append(m.rows, *r)
 	}
 	if len(invalid) > 0 {
@@ -230,8 +232,9 @@ func (m *model) finish(it queue.Item) time.Time {
 }
 
 // sortItems: outstanding by Created ascending, then completed by finish time descending; ties by ID.
-func (m *model) sortItems(items []queue.Item) {
-	now := time.Now()
+// Returns the outstanding count and the completed items' finish times.
+func (m *model) sortItems(items []queue.Item) (int, map[string]time.Time) {
+	now := m.now()
 	out := map[string]bool{}
 	at := map[string]time.Time{}
 	for _, it := range items {
@@ -251,6 +254,13 @@ func (m *model) sortItems(items []queue.Item) {
 		}
 		return a.ID < b.ID
 	})
+	n := 0
+	for _, it := range items {
+		if out[it.ID] {
+			n++
+		}
+	}
+	return n, at
 }
 
 // stamp is local time: 15:04 for today, else Jan 2 15:04.
@@ -275,25 +285,19 @@ func itemRow(it queue.Item, st, ts string) string {
 // For the invalid pseudo-session the index is into s.invalid. View and the mouse both use this.
 func (m *model) itemPane(s *sessionRow, now time.Time) (rows []string, idx []int) {
 	add := func(r string, i int) { rows, idx = append(rows, r), append(idx, i) }
-	states := make([]string, len(s.items))
-	n := 0
-	for i, it := range s.items {
-		if states[i] = m.q.State(it, now); outstanding(states[i]) {
-			n++
-		}
-	}
+	n := s.nOut
 	for i, it := range s.items {
 		if i == 0 && n > 0 {
 			add(head.Render(fmt.Sprintf("Outstanding (%d)", n)), -1)
 		}
-		if i == n && n < len(s.items) {
+		if i == n {
 			add(head.Render(fmt.Sprintf("Completed (%d)", len(s.items)-n)), -1)
 		}
 		ts := it.Created
-		if !outstanding(states[i]) {
-			ts = m.finish(it)
+		if i >= n {
+			ts = s.fin[it.ID]
 		}
-		add(itemRow(it, states[i], stamp(ts, now)), i)
+		add(itemRow(it, m.q.State(it, now), stamp(ts, now)), i)
 	}
 	for i, id := range s.invalid {
 		add("⚠ "+id, i)
@@ -461,14 +465,21 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		m.focus = 2
 	case pane < 2 && msg.Y >= listTop:
-		m.focus = pane
 		row := msg.Y - listTop
-		if pane == 0 && row < len(m.rows) {
-			m.enterSession(row)
-		} else if s := m.session(); pane == 1 && s != nil {
-			if _, idx := m.itemPane(s, m.now()); row < len(idx) && idx[row] >= 0 {
-				m.ii = idx[row]
+		vis := row < max(5, m.h-3)-1 // only drawn rows are clickable
+		item := -1
+		if s := m.session(); pane == 1 && s != nil && vis {
+			if _, idx := m.itemPane(s, m.now()); row < len(idx) {
+				if item = idx[row]; item < 0 {
+					return m, nil // a header: fully inert
+				}
 			}
+		}
+		m.focus = pane
+		if pane == 0 && vis && row < len(m.rows) {
+			m.enterSession(row)
+		} else if item >= 0 {
+			m.ii = item
 		}
 		m.open()
 	default:
