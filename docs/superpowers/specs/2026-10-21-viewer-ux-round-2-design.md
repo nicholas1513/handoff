@@ -82,7 +82,17 @@ Order, top to bottom:
    reason (`needs-login`), the rule badge and the cwd (`~`-shortened).
 7. One `── 📎 <name> ──` section per attached file, with its full content. JSON is pretty-printed
    when it parses; otherwise the content is shown as-is.
-8. `── Integrity ──`: the SHA-256, dimmed.
+8. `── Integrity ──` (changed after the first real use, user decision: a bare hash gave no algorithm
+   and couldn't be checked by hand):
+   - The combined hash, labeled `SHA-256 (combined: item.json + attachments)`, dimmed. It's what
+     the run-time `modified` check and `result.json`'s `sha256_reviewed` use; no standard tool
+     reproduces it.
+   - Then one line per file with its own plain SHA-256 (what `shasum -a 256 <path>` prints) and the
+     exact path to check: `item.json` at `~/.handoff/queue/<id>/item.json`, and each attachment at
+     its **snapshot** copy, `~/.handoff/snap/<id>/<name>` (outside the agent's write access, and the
+     copy that actually runs). Paths are shown `~`-shortened, with the same home rule as the cwd.
+   - The per-file hashes come from the same bytes the combined hash was computed from (one read),
+     not from a second read of the files.
 9. `── Result ──` when there's a result: the state colored by outcome, the exit code, the time,
    then stdout and stderr under sub-labels.
 
