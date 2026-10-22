@@ -136,6 +136,17 @@ The items pane is split under two headers, each with a count. A header is hidden
 - Because Outstanding is oldest-first, the oldest pending item is always the first item row. Session entry and auto-advance
   (sections 3 and below) keep picking it by `Created`, so they land on that row.
 
+### 2c. Scrolling (added after real use, user decision)
+
+- **Items pane:** the list scrolls to keep the selected item in view, for keyboard moves and automatic jumps alike. The mouse wheel
+  still moves the selection. When rows are hidden, a dim `↑ N more` / `↓ N more` line shows at the top or bottom; these lines take
+  a list row and can't be clicked. Headers scroll with the list (they aren't pinned). Clicks map through the scroll offset, so a
+  click always selects exactly the drawn item.
+- **Detail pane, Result output:** stdout and stderr together sit in a box capped at **40% of the window height**, with a dim
+  `lines A–B of T` line when the output is longer. With the detail pane focused, `[` / `]` and PgUp / PgDn scroll that box by a page;
+  ↑↓ still scroll the whole detail pane, and the mouse wheel over the box scrolls the box. Only result output is capped: the command,
+  the description, the warnings and the attachments always show in full. The box scroll resets to the top on a different item.
+
 ### 3. Auto-advance
 
 After a **run finishes** or a **reject**, if the session still has pending items, select the
