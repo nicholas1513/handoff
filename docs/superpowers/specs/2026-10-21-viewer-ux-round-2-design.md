@@ -164,6 +164,16 @@ The items pane is split under two headers, each with a count. A header is hidden
   Keys with the detail pane focused: `{` / `}` scroll the prompt box, and `[` `]` / PgUp / PgDn stay with Result. The mouse wheel scrolls
   whichever box it is over. The footer reads `lines A–B of T · { }`. The status line adds `{ } scroll prompt` when that box is
   framed. The box scroll resets on a different item.
+- **Generalized boxes (user decision; supersedes the per-box `{ }` keys above):** every large section except Command and
+  Integrity uses the same framed, scrollable box when it's longer than its cap. That means Result (40% of window height), the Why
+  prompt (20%) and **each attachment (30%)**. The Command and every argv element are never boxed.
+  - One box is **selected**: its border is drawn brighter (the section blue). `[` `]` / PgUp / PgDn scroll the selected box, and
+    `{` / `}` move the selection to the previous or next box. The mouse wheel scrolls the box under it and selects it. Default
+    selection on opening an item: the first box. Footers read `lines A–B of T`. The status line shows `[ ] scroll · { } next box`
+    when any box is framed.
+  - **Attachments not fully viewed:** an attachment box that has never been scrolled to its last line (tracked per item while it is
+    open, reset on a different item) adds a red `📎 <name> not fully viewed` chip to the detail's chip line. The armed run prompt reads
+    `space again to run (<name> not fully viewed)`. It warns but doesn't block, as with the interpreter flag.
 - **Whole-pane scroll is bounded:** ↑↓ on the detail pane stop when the last line reaches the pane's bottom, so content that fits
   doesn't scroll at all.
 
