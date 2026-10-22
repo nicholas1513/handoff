@@ -36,6 +36,9 @@ func isURL(w string) bool { return strings.HasPrefix(w, "http://") || strings.Ha
 
 // word renders one sanitized argv word; URLs break at "/" boundaries, continuation lines indented by indent.
 func word(w string, indent int, sizes map[string]int) string {
+	if w == "" {
+		return dim.Render(`""`)
+	}
 	w = sanitize(w)
 	if m := attRe.FindStringSubmatch(w); m != nil {
 		note := " (attached, see below)"
@@ -73,10 +76,10 @@ func commandLines(argv []string, sizes map[string]int) []string {
 		head = append(head, cmdProg.Render(sanitize(argv[i])))
 		i++
 	}
-	if len(head) == 0 {
-		return nil
+	type kv struct {
+		flag, val string
+		has       bool
 	}
-	type kv struct{ flag, val string }
 	var flags []kv
 	var pos []string
 	width := 0
@@ -89,16 +92,19 @@ func commandLines(argv []string, sizes map[string]int) []string {
 		}
 		f := kv{flag: a}
 		if i < len(argv) && !strings.HasPrefix(argv[i], "--") {
-			f.val, i = argv[i], i+1
+			f.val, f.has, i = argv[i], true, i+1
 		}
 		flags = append(flags, f)
 		width = max(width, len(sanitize(a)))
 	}
-	lines := []string{strings.Join(head, " ")}
+	var lines []string
+	if len(head) > 0 {
+		lines = append(lines, strings.Join(head, " "))
+	}
 	for _, f := range flags {
 		s := sanitize(f.flag)
 		l := "  " + cmdFlag.Render(s)
-		if f.val != "" {
+		if f.has {
 			l += strings.Repeat(" ", width-len(s)+1) + word(f.val, 2+width+1, sizes)
 		}
 		lines = append(lines, l)
