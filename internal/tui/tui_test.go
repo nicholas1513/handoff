@@ -71,22 +71,24 @@ func TestClickSelectsAndRunNeedsConfirm(t *testing.T) {
 		t.Fatalf("item ran without confirmation: %s", s)
 	}
 
+	ran := *m.item() // the selection auto-advances once the run finishes
 	m, cmd = click(m, dx+yesX+1, buttonY)
 	if cmd == nil {
 		t.Fatal("confirm click did not start the run")
 	}
 	next, _ := m.Update(cmd())
 	m = next.(model)
-	if s := q.State(*m.item(), time.Now()); s != queue.Succeeded {
+	if s := q.State(ran, time.Now()); s != queue.Succeeded {
 		t.Fatalf("state after confirmed run = %s", s)
 	}
 }
 
 func TestRejectAndInvalid(t *testing.T) {
 	q, m := setup(t)
+	rejected := *m.item()
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	m = next.(model)
-	if s := q.State(*m.item(), time.Now()); s != queue.Rejected {
+	if s := q.State(rejected, time.Now()); s != queue.Rejected {
 		t.Fatalf("state after x = %s", s)
 	}
 	if _, err := q.Snapshot("../nope"); err == nil {
@@ -175,5 +177,64 @@ func TestArmThenNotPendingLeavesNoStuckArm(t *testing.T) {
 	m, cmd := press(m, " ")
 	if m.armed || cmd != nil {
 		t.Fatal("arm must clear and nothing run when the item is no longer pending")
+	}
+}
+
+func TestRejectAdvancesToOldestPending(t *testing.T) {
+	_, m := setup(t) // "second" (newest) is selected, "first" is older
+	m, _ = press(m, "x")
+	if m.item().Description != "first" {
+		t.Fatalf("after reject selected %q, want oldest pending %q", m.item().Description, "first")
+	}
+}
+
+func TestAdvanceSurvivesRefresh(t *testing.T) {
+	_, m := setup(t)
+	m, _ = press(m, "x")
+	next, _ := m.Update(tickMsg(time.Now()))
+	m = next.(model)
+	if m.item().Description != "first" {
+		t.Fatal("refresh tick moved the selection back")
+	}
+}
+
+func TestNoAdvanceIfUserMovedAway(t *testing.T) {
+	_, m := setup(t)
+	ran := m.item().ID
+	m.focus = 1
+	m.move(1) // user moves to "first" while the run is in flight
+	m.advance(ran)
+	if m.item().Description != "first" || !m.advancedAt.IsZero() {
+		t.Fatal("advance must not fire when the selection moved off the item that ran")
+	}
+}
+
+func TestSpaceIgnoredRightAfterAdvance(t *testing.T) {
+	_, m := setup(t)
+	clock := time.Now()
+	m.now = func() time.Time { return clock }
+	m, _ = press(m, "x") // advances
+	m, cmd := press(m, " ")
+	if m.armed || cmd != nil {
+		t.Fatal("space within 1s of an auto-advance must be ignored")
+	}
+	m, _ = press(m, "r")
+	if m.armed {
+		t.Fatal("r within 1s of an auto-advance must be ignored")
+	}
+	clock = clock.Add(1100 * time.Millisecond)
+	m, _ = press(m, " ")
+	if !m.armed {
+		t.Fatal("space after the guard should arm")
+	}
+}
+
+func TestNothingPendingStays(t *testing.T) {
+	_, m := setup(t)
+	m, _ = press(m, "x") // advances to "first"
+	at := m.advancedAt
+	m, _ = press(m, "x") // nothing left
+	if m.item().Description != "first" || !m.advancedAt.Equal(at) {
+		t.Fatal("with nothing pending the selection and advancedAt must stay")
 	}
 }

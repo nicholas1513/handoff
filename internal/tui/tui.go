@@ -36,6 +36,9 @@ const (
 	armedBtn   = "space again to run · any other key cancels"
 )
 
+// advanceGuard: after an auto-advance, space/r are ignored so a burst of taps can't run the new item unseen.
+const advanceGuard = time.Second
+
 func columns(w int) (sessions, items, detail int) {
 	sessions, items = max(22, w/5), max(28, w*3/10)
 	return sessions, items, max(20, w-sessions-items)
@@ -71,6 +74,9 @@ type model struct {
 	status   string
 	w, h     int
 	titles   titleCache
+
+	now        func() time.Time
+	advancedAt time.Time
 }
 
 func Run(q *queue.Queue, home string) error {
@@ -79,7 +85,7 @@ func Run(q *queue.Queue, home string) error {
 }
 
 func newModel(q *queue.Queue, home string) model {
-	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}}
+	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}, now: time.Now}
 	m.refresh()
 	return m
 }
@@ -221,7 +227,28 @@ func (m *model) reject() {
 	m.confirm, m.armed, m.status = false, false, "rejected"
 	if err != nil {
 		m.status = "reject: " + err.Error()
+		return
 	}
+	m.advance(it.ID)
+}
+
+// advance selects the session's oldest pending item, but only if the selection is still on fromID.
+func (m *model) advance(fromID string) {
+	s, cur := m.session(), m.item()
+	if s == nil || cur == nil || cur.ID != fromID {
+		return
+	}
+	best := -1
+	for i, it := range s.items {
+		if m.q.State(it, time.Now()) == queue.Pending && (best < 0 || it.Created.Before(s.items[best].Created)) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return
+	}
+	m.ii, m.advancedAt, m.reviewed = best, m.now(), nil
+	m.open()
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -237,6 +264,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "run: " + msg.err.Error()
 		}
 		m.refresh()
+		m.advance(msg.id)
 	case tea.KeyMsg:
 		return m.key(msg.String())
 	case tea.MouseMsg:
@@ -245,8 +273,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// arm is the only way a key starts a run; a time guard belongs here.
-func (m *model) arm() { m.armed = m.pending() }
+// arm is the only way a key starts a run; holds the advanceGuard check.
+func (m *model) arm() { m.armed = m.pending() && m.now().Sub(m.advancedAt) >= advanceGuard }
 
 func (m model) key(k string) (tea.Model, tea.Cmd) {
 	if m.running && k != "q" && k != "ctrl+c" {
