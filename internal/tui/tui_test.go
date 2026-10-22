@@ -42,6 +42,8 @@ func setup(t *testing.T) (*queue.Queue, model) {
 		}
 	}
 	m := newModel(q, t.TempDir())
+	m.ii, m.advancedAt = 0, time.Time{} // startup now picks the oldest pending; these tests start on the newest, unguarded
+	m.open()
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return q, next.(model)
 }
@@ -369,5 +371,100 @@ func TestStayOnFinishedWhileOthersPending(t *testing.T) {
 	m = tickM(m)
 	if m.item().Description != "second" {
 		t.Fatalf("tick dragged selection to %q", m.item().Description)
+	}
+}
+
+const sidB = "1c7d3b9f-2a4e-4d66-8b8f-3e5a7c9d1f23"
+
+// twoSessions: A has a1 (oldest, pending), a2 (pending), a3 (newest, rejected); B (newer, so row 0) has one pending item.
+func twoSessions(t *testing.T, finishAll bool) (*queue.Queue, model) {
+	t.Helper()
+	q := &queue.Queue{Root: t.TempDir()}
+	add := func(s, d string, fin bool) {
+		it, err := q.Add(queue.Item{Description: d, Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: s}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fin {
+			if err := q.Claim(it); err != nil {
+				t.Fatal(err)
+			}
+			q.WriteResult(it, queue.Result{State: queue.Rejected, ExitCode: -1, RanAt: time.Now()})
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	add(sid, "a1", finishAll)
+	add(sid, "a2", finishAll)
+	add(sid, "a3", true)
+	add(sidB, "b1", finishAll)
+	m := newModel(q, t.TempDir())
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return q, next.(model)
+}
+
+func TestSwitchSessionSelectsOldestPending(t *testing.T) {
+	_, m := twoSessions(t, false)
+	m.si, m.ii, m.focus = 0, 0, 0
+	m.open()
+	if m.item().Description != "b1" || m.session().id != sidB {
+		t.Fatalf("setup: want B/b1, got %+v", m.item())
+	}
+	m, _ = press(m, "j")
+	if m.item().Description != "a1" {
+		t.Fatalf("down into A: want a1, got %q", m.item().Description)
+	}
+	m, _ = press(m, "k")
+	m, _ = press(m, "j")
+	if m.item().Description != "a1" {
+		t.Fatalf("re-enter A: want a1, got %q", m.item().Description)
+	}
+}
+
+func TestClickSessionSelectsOldestPending(t *testing.T) {
+	_, m := twoSessions(t, false)
+	m.si, m.ii = 0, 0
+	m.open()
+	m, _ = click(m, 1, listTop+1)
+	if m.session().id != sid || m.item().Description != "a1" {
+		t.Fatalf("click A: want a1, got %+v", m.item())
+	}
+}
+
+func TestSwitchSessionNoPendingSelectsNewest(t *testing.T) {
+	_, m := twoSessions(t, true)
+	m.si, m.ii, m.focus = 0, 0, 0
+	m, _ = press(m, "j")
+	if m.session().id != sid || m.ii != 0 || m.item().Description != "a3" {
+		t.Fatalf("no pending: want newest a3 at 0, got %d %q", m.ii, m.item().Description)
+	}
+}
+
+func TestSwitchSessionGuard(t *testing.T) {
+	_, m := twoSessions(t, false)
+	clock := time.Now()
+	m.now = func() time.Time { return clock }
+	m.focus = 0
+	m, _ = press(m, "j")
+	m, _ = press(m, " ")
+	if m.armed {
+		t.Fatal("space right after switching must be ignored")
+	}
+	clock = clock.Add(1100 * time.Millisecond)
+	m, _ = press(m, " ")
+	if !m.armed {
+		t.Fatal("space after the guard should arm")
+	}
+}
+
+func TestStartupSelectsOldestPending(t *testing.T) {
+	q := &queue.Queue{Root: t.TempDir()}
+	for _, d := range []string{"a1", "a2", "a3"} {
+		if _, err := q.Add(queue.Item{Description: d, Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: sid}, nil); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if m := newModel(q, t.TempDir()); m.item().Description != "a1" {
+		t.Fatalf("startup: want oldest pending a1, got %q", m.item().Description)
 	}
 }

@@ -22,7 +22,10 @@ func withItem(t *testing.T, m model, it queue.Item, files map[string]string, w i
 	if _, err := m.q.Add(it, files); err != nil {
 		t.Fatal(err)
 	}
-	next, _ := newModel(m.q, m.home).Update(tea.WindowSizeMsg{Width: w, Height: 30})
+	nm := newModel(m.q, m.home)
+	nm.ii = 0 // startup now picks the oldest pending; these tests want the newest
+	nm.open()
+	next, _ := nm.Update(tea.WindowSizeMsg{Width: w, Height: 30})
 	return next.(model)
 }
 
