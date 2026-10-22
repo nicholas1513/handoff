@@ -6,14 +6,12 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
 
-	"github.com/aymanbagabas/go-osc52/v2"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -301,30 +299,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// copyToClipboard is a seam so tests can capture the text without a terminal.
-var copyToClipboard = func(s string) error {
-	_, err := osc52.New(s).WriteTo(os.Stderr)
-	return err
-}
-
-// copyHashes puts one `shasum -c` line per file on the clipboard (never the internal combined hash).
-func (m *model) copyHashes() tea.Cmd {
-	if m.reviewed == nil {
-		m.status = "nothing to copy"
-		return nil
-	}
-	var b strings.Builder
-	for _, f := range m.reviewed.FileHashes {
-		fmt.Fprintf(&b, "%s  %s\n", f.SHA256, f.Path)
-	}
-	m.status = fmt.Sprintf("copied %d hashes · pbpaste | shasum -a 256 -c", len(m.reviewed.FileHashes))
-	s := b.String()
-	return func() tea.Msg {
-		copyToClipboard(s)
-		return nil
-	}
-}
-
 // arm is the only way a key starts a run; holds the advanceGuard check.
 func (m *model) arm() { m.armed = m.pending() && m.now().Sub(m.advancedAt) >= advanceGuard }
 
@@ -358,8 +332,6 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		m.arm()
 	case "x":
 		m.reject()
-	case "c":
-		return m, m.copyHashes()
 	case "o":
 		m.reviewed = nil
 		m.open()
@@ -466,7 +438,7 @@ func (m model) View() string {
 	body := strings.Split(lipgloss.NewStyle().Width(dw-2).Render(m.detail()), "\n")
 	body = body[min(m.scroll, max(0, len(body)-1)):]
 
-	status := dim.Render("↑↓ move · tab/click pane · space space run · x reject · c copy hashes · o re-open · q quit")
+	status := dim.Render("↑↓ move · tab/click pane · space space run · x reject · o re-open · q quit")
 	if m.status != "" {
 		status = m.status + dim.Render("  ·  q quit")
 	}
