@@ -549,7 +549,7 @@ func (m model) View() string {
 
 	status := dim.Render("↑↓ move · tab/click pane · space space run · x reject · o re-open · q quit")
 	if m.status != "" {
-		status = m.status + dim.Render("  ·  q quit")
+		status = m.status + dim.Render("  ·  ") + status
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Top,
