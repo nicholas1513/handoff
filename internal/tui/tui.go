@@ -617,6 +617,9 @@ func (m model) View() string {
 	if m.focus > 0 && m.pending() {
 		keys = append(keys, "space space run", "x reject")
 	}
+	if _, framed := m.resultLines(); m.focus == 2 && framed {
+		keys = append(keys, "[ ] scroll output")
+	}
 	if m.changed {
 		keys = append(keys, "o re-open")
 	}

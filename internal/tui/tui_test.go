@@ -761,12 +761,12 @@ func withResult(t *testing.T, m model, n int) model {
 
 func outLines(m model) (n int, footer string) {
 	for _, l := range strings.Split(ansi.Strip(m.detail()), "\n") {
-		l = strings.TrimSpace(l)
+		if i := strings.Index(l, "lines "); i >= 0 && strings.Contains(l, " · [ ]") {
+			footer = l[i:strings.Index(l, " · [ ]")] // in the box's bottom border
+		}
+		l = strings.Trim(l, "│┃ ")
 		if strings.HasPrefix(l, "out") {
 			n++
-		}
-		if strings.HasPrefix(l, "lines ") {
-			footer = l
 		}
 	}
 	return
@@ -830,8 +830,17 @@ func TestResultBoxWheelAndPgKeys(t *testing.T) {
 	if got := wheel(m, y).outTop; got != 19 {
 		t.Fatalf("wheel over box outTop %d, want 19", got)
 	}
-	if got := wheel(m, y-1).outTop; got != 16 { // the exit line just above the box
+	if got := wheel(m, y-1).outTop; got != 16 { // the box's top border
+		t.Fatalf("wheel on the top border moved outTop to %d", got)
+	}
+	if got := wheel(m, y-2).outTop; got != 16 { // the exit line above the border
 		t.Fatalf("wheel above the box moved outTop to %d", got)
+	}
+	if got := wheel(m, y+m.outCap()).outTop; got != 16 { // the bottom border
+		t.Fatalf("wheel on the bottom border moved outTop to %d", got)
+	}
+	if got := wheel(m, y+m.outCap()-1).outTop; got != 19 { // last content row
+		t.Fatalf("wheel on the last box row outTop %d, want 19", got)
 	}
 	if got := wheel(m, 2).outTop; got != 16 {
 		t.Fatalf("wheel off box moved outTop to %d", got)
@@ -969,4 +978,115 @@ func longFile(t *testing.T, n int) string {
 	p := filepath.Join(t.TempDir(), "a.txt")
 	os.WriteFile(p, []byte(b.String()), 0o600)
 	return p
+}
+
+func TestScrollbarGeometry(t *testing.T) {
+	thumb := func(b []string) (first, n int) {
+		first = -1
+		for i, g := range b {
+			if g == "┃" {
+				if first < 0 {
+					first = i
+				}
+				n++
+			}
+		}
+		return
+	}
+	if len(scrollbar(10, 100, 0)) != 10 {
+		t.Fatal("want one glyph per row")
+	}
+	if f, n := thumb(scrollbar(10, 100, 0)); f != 0 || n != 1 {
+		t.Fatalf("top: first %d n %d", f, n)
+	}
+	if f, n := thumb(scrollbar(10, 100, 90)); f+n != 10 || n != 1 {
+		t.Fatalf("bottom: first %d n %d", f, n)
+	}
+	if _, n := thumb(scrollbar(10, 100000, 5)); n != 1 {
+		t.Fatalf("huge total: thumb %d rows, want at least 1", n)
+	}
+	if f, n := thumb(scrollbar(10, 10, 0)); f != 0 || n != 10 { // documented: total<=cap is all thumb
+		t.Fatalf("fits: first %d n %d", f, n)
+	}
+}
+
+func resultView(t *testing.T, m model, n, w, h int) model {
+	m = withResult(t, m, n)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	return next.(model)
+}
+
+func TestResultBoxFramed(t *testing.T) {
+	_, m := setup(t)
+	old := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(old) })
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	m = resultView(t, m, 200, 160, 40)
+	raw := m.View()
+	v := ansi.Strip(raw)
+	d := ansi.Strip(m.detail())
+	if !strings.Contains(d, "╭") || !strings.Contains(d, "╰") {
+		t.Fatal("detail has no box border")
+	}
+	for _, want := range []string{"╭", "╰", "lines 1–", "[ ] or PgUp/PgDn", "┃"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("view lacks %q", want)
+		}
+	}
+	if !strings.Contains(raw, "48;2;") {
+		t.Fatal("no background colour on the box")
+	}
+	if strings.Index(v, "╭") > strings.Index(v, "out001") || strings.Index(v, "out001") > strings.Index(v, "╰") {
+		t.Fatal("output not between the borders")
+	}
+}
+
+func TestShortResultNotFramed(t *testing.T) {
+	_, m := setup(t)
+	m = resultView(t, m, 3, 160, 40)
+	v := ansi.Strip(m.detail()) // the panes draw their own rounded borders, so look at the detail alone
+	if strings.Contains(v, "╭") || strings.Contains(v, "[ ] or PgUp/PgDn") || !strings.Contains(v, "out003") {
+		t.Fatal("short result must be plain")
+	}
+}
+
+func TestScrollOutputHintOnStatusLine(t *testing.T) {
+	_, m := setup(t)
+	long := resultView(t, m, 200, 160, 40)
+	long.focus = 2
+	if !strings.Contains(ansi.Strip(long.View()), "[ ] scroll output") {
+		t.Fatal("hint missing for a framed box at focus 2")
+	}
+	long.focus = 1
+	if strings.Contains(ansi.Strip(long.View()), "[ ] scroll output") {
+		t.Fatal("hint shown at focus 1")
+	}
+	short := resultView(t, m, 3, 160, 40)
+	short.focus = 2
+	if strings.Contains(ansi.Strip(short.View()), "[ ] scroll output") {
+		t.Fatal("hint shown for a short result")
+	}
+}
+
+func TestFramedBoxWrapsToInnerWidth(t *testing.T) {
+	_, m := setup(t)
+	m = resultView(t, m, 200, 160, 40)
+	_, _, dw := columns(m.w)
+	for _, l := range strings.Split(ansi.Strip(m.detail()), "\n") {
+		if strings.ContainsAny(l[:min(3, len(l))], "│╭╰") && lipgloss.Width(l) != dw-2 {
+			t.Fatalf("box line not %d wide: %q", dw-2, l)
+		}
+	}
+	// the long line is out999 + 120 x's; scroll to it and check nothing is lost
+	m.outTop = 1 << 20
+	m.scrollOut(0)
+	var rows []string
+	for _, l := range strings.Split(ansi.Strip(m.detail()), "\n") {
+		if i := strings.Index(l, "out999"); i >= 0 || strings.Contains(l, "xxx") {
+			rows = append(rows, strings.TrimRight(strings.Trim(l, "│┃ "), " "))
+		}
+	}
+	if got := strings.Join(rows, ""); got != "out999"+strings.Repeat("x", 120) {
+		t.Fatalf("wrapped text lost characters: %q", got)
+	}
 }
