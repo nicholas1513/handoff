@@ -196,12 +196,16 @@ func (m *model) scrollOut(d int) {
 
 // inBox reports whether screen row y is one of the Result box's drawn lines (body line k is at buttonY+1+k-scroll).
 func (m model) inBox(y int) bool {
-	head, _ := m.detailParts()
+	head, tail := m.detailParts()
 	_, _, dw := columns(m.w)
-	start := strings.Count(lipgloss.NewStyle().Width(dw-2).Render(strings.TrimSuffix(head, "\n")), "\n") + 1
-	first := buttonY + 1 + start - m.scroll
-	return y >= first && y < first+min(m.outCap(), len(m.resultLines())) && y <= max(5, m.h-3)
+	wrap := lipgloss.NewStyle().Width(dw - 2).Render
+	start := strings.Count(wrap(strings.TrimSuffix(head, "\n")), "\n") + 1
+	first := buttonY + 1 + start - m.bodyTop(strings.Count(wrap(head+tail), "\n")+1)
+	return y > buttonY && y >= first && y < first+min(m.outCap(), len(m.resultLines())) && y <= max(5, m.h-3)
 }
+
+// bodyTop is the first detail line drawn: m.scroll, kept inside the n wrapped lines. View and inBox share it.
+func (m model) bodyTop(n int) int { return min(m.scroll, max(0, n-1)) }
 
 // detailParts is the detail text split at the Result box: everything before it, then the box (and its footer).
 func (m model) detailParts() (head, tail string) {

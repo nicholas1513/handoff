@@ -740,6 +740,7 @@ func withResult(t *testing.T, m model, n int) model {
 	for i := 1; i <= n; i++ {
 		fmt.Fprintf(&b, "out%03d\n", i)
 	}
+	b.WriteString("out999" + strings.Repeat("x", 120) + "\n") // wider than the pane: wraps to 3 lines
 	it, err := m.q.Add(queue.Item{Description: "res", Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: sid}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -775,23 +776,23 @@ func TestResultBoxCapped(t *testing.T) {
 	m = withResult(t, m, 200)
 	m.focus = 2
 	c := 40 * 40 / 100
-	// the "stdout" label takes one box line, so 200 output lines plus it make 201
-	if n, f := outLines(m); n > c || f != fmt.Sprintf("lines 1–%d of 201", c) {
+	// the "stdout" label takes one box line and the long line wraps to 3: 200+1+3 = 204 lines
+	if n, f := outLines(m); n > c || f != fmt.Sprintf("lines 1–%d of 204", c) {
 		t.Fatalf("n=%d footer=%q", n, f)
 	}
 	m, _ = press(m, "]")
-	if _, f := outLines(m); f != fmt.Sprintf("lines %d–%d of 201", c+1, 2*c) {
+	if _, f := outLines(m); f != fmt.Sprintf("lines %d–%d of 204", c+1, 2*c) {
 		t.Fatalf("after ]: %q", f)
 	}
 	m, _ = press(m, "[")
-	if _, f := outLines(m); f != fmt.Sprintf("lines 1–%d of 201", c) {
+	if _, f := outLines(m); f != fmt.Sprintf("lines 1–%d of 204", c) {
 		t.Fatalf("after [: %q", f)
 	}
 	for i := 0; i < 40; i++ { // clamps at the end
 		m, _ = press(m, "]")
 	}
-	if n, f := outLines(m); f != "lines 186–201 of 201" || n != c {
-		t.Fatalf("end: n=%d %q", n, f)
+	if _, f := outLines(m); f != "lines 189–204 of 204" {
+		t.Fatalf("end: %q", f)
 	}
 	m, _ = press(m, "]")
 	m.focus = 1
@@ -828,6 +829,9 @@ func TestResultBoxWheelAndPgKeys(t *testing.T) {
 	if got := wheel(m, y).outTop; got != 19 {
 		t.Fatalf("wheel over box outTop %d, want 19", got)
 	}
+	if got := wheel(m, y-1).outTop; got != 16 { // the exit line just above the box
+		t.Fatalf("wheel above the box moved outTop to %d", got)
+	}
 	if got := wheel(m, 2).outTop; got != 16 {
 		t.Fatalf("wheel off box moved outTop to %d", got)
 	}
@@ -841,10 +845,26 @@ func TestOnlyResultIsCapped(t *testing.T) {
 	}
 	src := filepath.Join(t.TempDir(), "a.txt")
 	os.WriteFile(src, []byte(b.String()), 0o600)
-	m = withItem(t, m, queue.Item{Description: "a", Argv: []string{"/usr/bin/true", "{file:a.txt}"}}, map[string]string{"a.txt": src}, 120)
+	desc, val := "desc-"+strings.Repeat("d", 30)+"-end", "https://example.com/"+strings.Repeat("v", 30)+"/vend"
+	m = withItem(t, m, queue.Item{Description: desc, Argv: []string{"/usr/bin/true", "--url", val, "--body", "@{file:a.txt}"}}, map[string]string{"a.txt": src}, 120)
+	it := *m.item()
+	var o strings.Builder
+	for i := 1; i <= 200; i++ {
+		fmt.Fprintf(&o, "out%03d\n", i)
+	}
+	m.q.Claim(it)
+	m.q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: time.Now(), Stdout: o.String()})
 	d := ansi.Strip(m.detail())
-	if !strings.Contains(d, "att001") || !strings.Contains(d, "att200") || strings.Contains(d, "lines 1–") {
-		t.Fatal("attachment was capped")
+	for i := 1; i <= 200; i++ {
+		if !strings.Contains(d, fmt.Sprintf("att%03d", i)) {
+			t.Fatalf("attachment line %d missing from the detail", i)
+		}
+	}
+	if want := fmt.Sprintf("lines 1–%d of 201", m.outCap()); !strings.Contains(d, want) {
+		t.Fatalf("result box not capped, want %q", want)
+	}
+	if f := flatten(m.detail()); !strings.Contains(f, desc) || !strings.Contains(f, val) {
+		t.Fatal("description or argv value cut")
 	}
 }
 
