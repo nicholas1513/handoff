@@ -96,12 +96,8 @@ Order, top to bottom:
    - **Revised after use (user decision):** the per-file lines come **first**, then the combined line,
      labeled `combined (internal; not comparable to shasum)`, so the first hash the eye lands on is
      one that can be checked. The user compared the combined hash with `shasum` and read it as a mismatch.
-   - **Copy key `c`:** copies the selected item's per-file hashes to the clipboard via the OSC 52
-     terminal escape, formatted as `shasum -a 256 -c` input: one `<hex>  <absolute path>` line per file
-     (absolute, because `shasum` does not expand `~`). The combined hash isn't included. The status line
-     says what was copied and how to check it ("copied 2 hashes · pbpaste | shasum -a 256 -c").
-     Terminals that ignore OSC 52 (macOS Terminal) copy nothing; that's acceptable. Like any key, `c`
-     while armed only cancels the arm.
+   - A `c` copy-to-clipboard key (OSC 52, `shasum -c` format) was built, then **reverted at the user's
+     request** as too complicated for now. To check by hand, run `shasum -a 256 <path>` on a listed path.
 9. `── Result ──` when there's a result: the state colored by outcome, the exit code, the time,
    then stdout and stderr under sub-labels.
 
