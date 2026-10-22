@@ -161,16 +161,60 @@ func chip(text, color string) string {
 }
 
 func (m model) detail() string {
+	head, tail := m.detailParts()
+	return head + tail
+}
+
+// outCap is the Result box height: 40% of the window, at least 3 lines.
+func (m model) outCap() int { return max(3, m.h*40/100) }
+
+// resultLines is the result's stdout and stderr, labelled and wrapped to the detail width, one entry per drawn line.
+func (m model) resultLines() []string {
+	if m.reviewed == nil {
+		return nil
+	}
+	res, err := m.q.ReadResult(m.reviewed.Item)
+	if err != nil {
+		return nil
+	}
+	_, _, dw := columns(m.w)
+	var out []string
+	for _, st := range [][2]string{{"stdout", res.Stdout}, {"stderr", res.Stderr}} {
+		if st[1] != "" {
+			txt := ansi.Wrap(strings.ReplaceAll(sanitize(st[1]), "\t", "    "), dw-2, "")
+			out = append(out, bold.Render(st[0]))
+			out = append(out, strings.Split(strings.TrimSuffix(txt, "\n"), "\n")...)
+		}
+	}
+	return out
+}
+
+// scrollOut moves the Result box by d lines, clamped to its output.
+func (m *model) scrollOut(d int) {
+	m.outTop = max(0, min(m.outTop+d, len(m.resultLines())-m.outCap()))
+}
+
+// inBox reports whether screen row y is one of the Result box's drawn lines (body line k is at buttonY+1+k-scroll).
+func (m model) inBox(y int) bool {
+	head, _ := m.detailParts()
+	_, _, dw := columns(m.w)
+	start := strings.Count(lipgloss.NewStyle().Width(dw-2).Render(strings.TrimSuffix(head, "\n")), "\n") + 1
+	first := buttonY + 1 + start - m.scroll
+	return y >= first && y < first+min(m.outCap(), len(m.resultLines())) && y <= max(5, m.h-3)
+}
+
+// detailParts is the detail text split at the Result box: everything before it, then the box (and its footer).
+func (m model) detailParts() (head, tail string) {
 	s := m.session()
 	if s != nil && s.invalid != nil && m.ii < len(s.invalid) {
 		_, err := m.q.Load(s.invalid[m.ii])
-		return warn.Render("This item failed to load and can't be run.") + "\n\n" + sanitize(fmt.Sprint(err))
+		return warn.Render("This item failed to load and can't be run.") + "\n\n" + sanitize(fmt.Sprint(err)), ""
 	}
 	if m.openErr != nil {
-		return warn.Render("Could not open item: ") + sanitize(m.openErr.Error())
+		return warn.Render("Could not open item: ") + sanitize(m.openErr.Error()), ""
 	}
 	if m.reviewed == nil {
-		return dim.Render("No items.")
+		return dim.Render("No items."), ""
 	}
 	it := m.reviewed.Item
 	var b strings.Builder
@@ -279,17 +323,17 @@ func (m model) detail() string {
 	if res, err := m.q.ReadResult(it); err == nil {
 		p("\n%s", heading("Result"))
 		p("%s exit %d at %s", chip(strings.ToUpper(res.State), resColor(res.State)), res.ExitCode, res.RanAt.Format(time.Kitchen))
-		if res.Stdout != "" {
-			p("%s\n%s", bold.Render("stdout"), sanitize(res.Stdout))
+		out := m.resultLines()
+		if n := m.outCap(); len(out) > n {
+			top := max(0, min(m.outTop, len(out)-n))
+			out = append(out[top:top+n:top+n], dim.Render(fmt.Sprintf("lines %d–%d of %d", top+1, top+n, len(m.resultLines()))))
 		}
-		if res.Stderr != "" {
-			p("%s\n%s", bold.Render("stderr"), sanitize(res.Stderr))
-		}
+		tail = strings.Join(out, "\n") + "\n"
 	} else if !errors.Is(err, os.ErrNotExist) {
 		p("\n%s", heading("Result"))
 		p("%s", warn.Render(sanitize(err.Error())))
 	}
-	return b.String()
+	return b.String(), tail
 }
 
 // resColor: pending yellow, succeeded green, anything else (failed, rejected) red.

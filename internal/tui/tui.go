@@ -73,6 +73,8 @@ type model struct {
 	armed    bool // keyboard: one space pressed, waiting for the second
 	running  bool
 	scroll   int
+	itemTop  int // first items-pane row drawn
+	outTop   int // first Result output line drawn
 	status   string
 	w, h     int
 	titles   titleCache
@@ -201,7 +203,7 @@ func (m *model) open() {
 		return
 	}
 	r, err := m.q.Snapshot(it.ID)
-	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll = &r, err, false, false, false, 0
+	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll, m.outTop = &r, err, false, false, false, 0, 0
 	if err != nil {
 		m.reviewed = nil
 	}
@@ -311,6 +313,52 @@ func (m *model) itemPane(s *sessionRow, now time.Time) (rows []string, idx []int
 	return rows, idx
 }
 
+// itemWindow is the first row drawn of n rows in height lines, given the previous top, so the
+// selected row sel is drawn and not under a "↑ N more" / "↓ N more" line (which take a line each).
+func itemWindow(n, sel, height, top int) int {
+	if n <= height {
+		return 0
+	}
+	top = max(0, min(top, n-height))
+	if sel < 0 {
+		return top
+	}
+	if top > 0 && sel < top+1 {
+		top = max(0, sel-1)
+	}
+	if top+height < n && sel > top+height-2 {
+		top = min(n-height, sel-height+2)
+	}
+	return top
+}
+
+// itemView is the items pane as drawn: the pane rows from the scroll offset with indicator lines,
+// and the item index each drawn line selects (-1: header or indicator). View and the mouse both use it.
+func (m *model) itemView(s *sessionRow, now time.Time) (rows []string, idx []int, sel int) {
+	all, ai := m.itemPane(s, now)
+	row := -1
+	for j, i := range ai {
+		if i == m.ii {
+			row = j
+		}
+	}
+	height := max(5, m.h-3) - 1
+	top := itemWindow(len(all), row, height, m.itemTop)
+	m.itemTop = top
+	end := min(len(all), top+height)
+	rows, idx, sel = all[top:end], ai[top:end], row-top
+	if len(all) > height {
+		rows, idx = append([]string{}, rows...), append([]int{}, idx...)
+		if top > 0 {
+			rows[0], idx[0] = dim.Render(fmt.Sprintf("↑ %d more", top+1)), -1
+		}
+		if end < len(all) {
+			rows[len(rows)-1], idx[len(idx)-1] = dim.Render(fmt.Sprintf("↓ %d more", len(all)-end+1)), -1
+		}
+	}
+	return rows, idx, sel
+}
+
 func clamp(i, n int) int { return max(0, min(i, n-1)) }
 
 func (m model) pending() bool {
@@ -375,6 +423,15 @@ func (m *model) oldestPending(s *sessionRow) (int, bool) {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	nm, cmd := m.update(msg)
+	next := nm.(model)
+	if s := next.session(); s != nil {
+		next.itemView(s, next.now()) // keeps itemTop in step with the selection, so View and the mouse agree
+	}
+	return next, cmd
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -429,6 +486,14 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		m.arm()
 	case "x":
 		m.reject()
+	case "[", "pgup", "]", "pgdown":
+		if m.focus == 2 {
+			d := m.outCap()
+			if k == "[" || k == "pgup" {
+				d = -d
+			}
+			m.scrollOut(d)
+		}
 	case "o":
 		m.reviewed = nil
 		m.open()
@@ -451,10 +516,14 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown:
 		m.focus = pane
+		d := 1
 		if msg.Button == tea.MouseButtonWheelUp {
-			m.move(-1)
+			d = -1
+		}
+		if pane == 2 && m.inBox(msg.Y) {
+			m.scrollOut(3 * d)
 		} else {
-			m.move(1)
+			m.move(d)
 		}
 	case msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft:
 	case pane == 2 && msg.Y == buttonY:
@@ -475,7 +544,7 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		vis := row < max(5, m.h-3)-1 // only drawn rows are clickable
 		item := -1
 		if s := m.session(); pane == 1 && s != nil && vis {
-			if _, idx := m.itemPane(s, m.now()); row < len(idx) {
+			if _, idx, _ := m.itemView(s, m.now()); row < len(idx) {
 				if item = idx[row]; item < 0 {
 					return m, nil // a header: fully inert
 				}
@@ -526,13 +595,7 @@ func (m model) View() string {
 	var irows []string
 	isel := -1
 	if s := m.session(); s != nil {
-		var idx []int
-		irows, idx = m.itemPane(s, m.now())
-		for j, i := range idx {
-			if i == m.ii {
-				isel = j
-			}
-		}
+		irows, _, isel = m.itemView(s, m.now())
 	}
 
 	header := ""
