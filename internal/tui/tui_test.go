@@ -547,12 +547,46 @@ func TestClickMapsPastHeaders(t *testing.T) {
 	if m.item().Description != "p2" {
 		t.Fatalf("click selected %q, want p2", m.item().Description)
 	}
+	m.focus = 0
 	m, _ = click(m, sw+3, listTop+3) // the Completed header
-	if m.item().Description != "p2" {
-		t.Fatalf("header click moved the selection to %q", m.item().Description)
+	if m.item().Description != "p2" || m.focus != 0 {
+		t.Fatalf("header click not inert: %q focus %d", m.item().Description, m.focus)
 	}
 	m, _ = click(m, sw+3, listTop+4)
 	if m.item().Description != "f2" {
 		t.Fatalf("click selected %q, want f2", m.item().Description)
+	}
+}
+
+func TestClickStableWhenItemsExpireAfterPaint(t *testing.T) {
+	_, m, _ := sections(t, false) // p1, p2 pending
+	sw, _, _ := columns(m.w)
+	want := paneRows(m) // header, p1, p2
+	m.now = func() time.Time { return time.Now().Add(100 * 24 * time.Hour) }
+	for y, w := range want {
+		m, _ = click(m, sw+3, listTop+y)
+		got := m.item().Description
+		if y == 0 && got != "p1" && got != "p2" { // header leaves the previous selection
+			t.Fatalf("header click selected %q", got)
+		}
+		if y > 0 && !strings.HasSuffix(w, got) {
+			t.Fatalf("row %d drawn %q but selected %q", y, w, got)
+		}
+	}
+}
+
+func TestClickBelowDrawnListDoesNothing(t *testing.T) {
+	_, m, _ := sections(t, true)                                  // 6 rows
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 8}) // h=5: 4 rows drawn
+	m = next.(model)
+	sw, _, _ := columns(m.w)
+	before := m.item().ID
+	m, _ = click(m, sw+3, listTop+4)
+	if m.item().ID != before {
+		t.Fatal("click below the last drawn row selected an undrawn item")
+	}
+	m, _ = click(m, 1, listTop+4)
+	if m.si != 0 {
+		t.Fatal("sessions click below the list moved the session")
 	}
 }
