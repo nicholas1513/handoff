@@ -158,7 +158,7 @@ func (m *model) refresh() {
 func (m *model) open() {
 	it := m.item()
 	if it == nil {
-		m.reviewed, m.openErr = nil, nil
+		m.reviewed, m.openErr, m.confirm, m.armed = nil, nil, false, false
 		return
 	}
 	if m.reviewed != nil && m.reviewed.Item.ID == it.ID {
@@ -253,10 +253,10 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.armed {
+		m.armed = false // also when startRun refuses, so no invisible arm is left behind
 		if k == " " {
 			return m, m.startRun()
-		}
-		m.armed = false // the cancelling key is not acted on
+		} // the cancelling key is not acted on
 		return m, nil
 	}
 	if m.confirm { // mouse confirm: any key cancels, space included
