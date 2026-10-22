@@ -173,7 +173,12 @@ The items pane is split under two headers, each with a count. A header is hidden
     when any box is framed.
   - **Attachments not fully viewed:** an attachment box that has never been scrolled to its last line (tracked per item while it is
     open, reset on a different item) adds a red `📎 <name> not fully viewed` chip to the detail's chip line. The armed run prompt reads
-    `space again to run (<name> not fully viewed)`. It warns but doesn't block, as with the interpreter flag.
+    `⚠ not fully viewed: <names> · space again to run · any other key cancels` (warning first, so it survives truncation on narrow
+    panes; reworded from the original at review), and the mouse confirm row carries the same warning. It warns but doesn't block, as
+    with the interpreter flag.
+  - "Viewed to the end" means the box's **last content row was actually drawn on screen**: the box was scrolled to its end AND that
+    row was inside the visible pane at the time. Pane scrolling counts as well as box scrolling. Being unframed (short) never counts
+    as seen by itself. `{` `}` `[` `]` scroll the pane so the selected box is in view.
 - **Whole-pane scroll is bounded:** ↑↓ on the detail pane stop when the last line reaches the pane's bottom, so content that fits
   doesn't scroll at all.
 
