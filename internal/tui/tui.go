@@ -203,6 +203,15 @@ func (m *model) move(d int) {
 	m.open()
 }
 
+// itemRow dims finished items (any state but pending/running).
+func itemRow(it queue.Item, st string) string {
+	row := glyph(st) + " " + oneLine(it.Description)
+	if st != queue.Pending && st != queue.Running {
+		return dim.Render(row)
+	}
+	return row
+}
+
 func clamp(i, n int) int { return max(0, min(i, n-1)) }
 
 func (m model) pending() bool {
@@ -408,7 +417,7 @@ func (m model) View() string {
 	var irows []string
 	if s := m.session(); s != nil {
 		for _, it := range s.items {
-			irows = append(irows, glyph(m.q.State(it, time.Now()))+" "+oneLine(it.Description))
+			irows = append(irows, itemRow(it, m.q.State(it, time.Now())))
 		}
 		for _, id := range s.invalid {
 			irows = append(irows, "⚠ "+id)

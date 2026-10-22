@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/nicholas1513/handoff/internal/queue"
 )
@@ -331,5 +333,25 @@ func TestNewItemInOtherSessionDoesNotPull(t *testing.T) {
 	m = tickM(m)
 	if m.item() == nil || m.item().ID != id || m.session().id != sid {
 		t.Fatalf("selection moved across sessions (si %d -> %d)", si, m.si)
+	}
+}
+
+func TestFinishedItemsDimmed(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	_, m := setup(t)
+	m, _ = press(m, "x") // rejects "second"; "first" stays pending
+	s := m.session()
+	var rej, pend string
+	for _, it := range s.items {
+		row := itemRow(it, m.q.State(it, time.Now()))
+		if it.Description == "second" {
+			rej = row
+		} else {
+			pend = row
+		}
+	}
+	const faint = "\x1b[2m"
+	if !strings.Contains(rej, faint) || strings.Contains(pend, faint) {
+		t.Fatalf("rejected %q, pending %q", rej, pend)
 	}
 }
