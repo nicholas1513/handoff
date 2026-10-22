@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -236,5 +238,37 @@ func TestNothingPendingStays(t *testing.T) {
 	m, _ = press(m, "x") // nothing left
 	if m.item().Description != "first" || !m.advancedAt.Equal(at) {
 		t.Fatal("with nothing pending the selection and advancedAt must stay")
+	}
+}
+
+func TestSpaceIgnoredAfterSelectedItemVanishes(t *testing.T) {
+	q, m := setup(t)
+	clock := time.Now()
+	m.now = func() time.Time { return clock }
+	if err := os.RemoveAll(filepath.Join(q.Root, "queue", m.item().ID)); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := m.Update(tickMsg(clock))
+	m, _ = press(next.(model), " ")
+	if m.item().Description != "first" || m.armed {
+		t.Fatalf("space right after the selection fell back must be ignored (selected %q, armed %v)", m.item().Description, m.armed)
+	}
+}
+
+func TestSpaceIgnoredAfterRunAdvance(t *testing.T) {
+	q, m := setup(t)
+	clock := time.Now()
+	m.now = func() time.Time { return clock }
+	it := *m.item()
+	if err := q.Claim(it); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: clock}); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := m.Update(runDone{id: it.ID})
+	m, _ = press(next.(model), " ")
+	if m.armed || m.item().Description != "first" {
+		t.Fatalf("space right after a run's advance must be ignored (selected %q, armed %v)", m.item().Description, m.armed)
 	}
 }

@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -44,21 +46,28 @@ func flatten(s string) string {
 
 func isURL(w string) bool { return strings.HasPrefix(w, "http://") || strings.HasPrefix(w, "https://") }
 
-// word renders one sanitized argv word; URLs break at "/" boundaries, continuation lines indented by indent.
-func word(w string, indent int, sizes map[string]int) string {
-	if w == "" {
-		return dim.Render(`""`)
-	}
+// shown sanitizes one argv word and Go-quotes it when empty or holding whitespace or a quote,
+// so a newline can't draw a fake argument line and one word can't pass for two.
+func shown(w string) string {
 	w = sanitize(w)
+	if w == "" || strings.ContainsFunc(w, func(r rune) bool { return unicode.IsSpace(r) || r == '"' }) {
+		return strconv.Quote(w)
+	}
+	return w
+}
+
+// word renders one argv word; URLs break at "/" boundaries, continuation lines indented by indent.
+func word(w string, indent int, sizes map[string]int) string {
+	q := shown(w)
 	if m := attRe.FindStringSubmatch(w); m != nil {
 		note := " (attached, see below)"
 		if n, ok := sizes[m[1]]; ok {
 			note = fmt.Sprintf(" (attached, %.1f KB, see below)", float64(n)/1000)
 		}
-		return cmdAtt.Render("📎 ") + w + cmdAtt.Render(note)
+		return cmdAtt.Render("📎 ") + q + cmdAtt.Render(note)
 	}
-	if !isURL(w) {
-		return w
+	if q != w || !isURL(w) {
+		return q
 	}
 	rest := w[strings.Index(w, "://")+3:]
 	h := strings.IndexByte(rest, '/')
@@ -79,67 +88,68 @@ func word(w string, indent int, sizes map[string]int) string {
 	return strings.Join(parts, "\n"+strings.Repeat(" ", indent))
 }
 
-// commandLines lays argv out as: program line, one line per flag, one line per positional.
+// commandLines lays argv out in argv order: program line, then one line per flag (with its value) or positional.
 func commandLines(argv []string, sizes map[string]int) []string {
 	i, head := 0, []string{}
 	for i < len(argv) && !strings.HasPrefix(argv[i], "-") {
-		head = append(head, cmdProg.Render(sanitize(argv[i])))
+		head = append(head, cmdProg.Render(shown(argv[i])))
 		i++
 	}
-	type kv struct {
-		flag, val string
+	type arg struct {
+		flag, val string // flag "" marks a positional
 		has       bool
 	}
-	var flags []kv
-	var pos []string
+	var args []arg
 	width := 0
 	for i < len(argv) {
 		a := argv[i]
 		i++
 		if !strings.HasPrefix(a, "-") || a == "-" {
-			pos = append(pos, a)
+			args = append(args, arg{val: a})
 			continue
 		}
-		f := kv{flag: a}
+		f := arg{flag: a}
 		if i < len(argv) && !strings.HasPrefix(argv[i], "--") {
 			f.val, f.has, i = argv[i], true, i+1
 		}
-		flags = append(flags, f)
-		width = max(width, len(sanitize(a)))
+		args = append(args, f)
+		width = max(width, len(shown(a)))
 	}
 	var lines []string
 	if len(head) > 0 {
 		lines = append(lines, strings.Join(head, " "))
 	}
-	for _, f := range flags {
-		s := sanitize(f.flag)
+	for _, a := range args {
+		if a.flag == "" {
+			lines = append(lines, "  "+word(a.val, 4, sizes))
+			continue
+		}
+		s := shown(a.flag)
 		l := "  " + cmdFlag.Render(s)
-		if f.has {
-			l += strings.Repeat(" ", width-len(s)+1) + word(f.val, 2+width+1, sizes)
+		if a.has {
+			l += strings.Repeat(" ", width-len(s)+1) + word(a.val, 2+width+1, sizes)
 		}
 		lines = append(lines, l)
-	}
-	for _, p := range pos {
-		lines = append(lines, "  "+word(p, 4, sizes))
 	}
 	return lines
 }
 
-// methodOf returns the upper-cased HTTP method from --method/-X/--request, or "".
+// methodOf returns the upper-cased HTTP method from the last --method/-X/--request, or "" (CLIs honour the last).
 func methodOf(argv []string) string {
+	mt := ""
 	for i, a := range argv {
 		switch {
 		case a == "--method" || a == "-X" || a == "--request":
 			if i+1 < len(argv) {
-				return strings.ToUpper(argv[i+1])
+				mt = strings.ToUpper(argv[i+1])
 			}
 		case strings.HasPrefix(a, "--method="):
-			return strings.ToUpper(strings.TrimPrefix(a, "--method="))
+			mt = strings.ToUpper(strings.TrimPrefix(a, "--method="))
 		case strings.HasPrefix(a, "--request="):
-			return strings.ToUpper(strings.TrimPrefix(a, "--request="))
+			mt = strings.ToUpper(strings.TrimPrefix(a, "--request="))
 		}
 	}
-	return ""
+	return mt
 }
 
 func heading(title string) string {
@@ -234,7 +244,7 @@ func (m model) detail() string {
 		why = append(why, sanitize(it.Reason))
 	}
 	cwd := sanitize(it.Cwd)
-	if m.home != "" && strings.HasPrefix(cwd, m.home) {
+	if m.home != "" && (cwd == m.home || strings.HasPrefix(cwd, m.home+"/")) {
 		cwd = "~" + strings.TrimPrefix(cwd, m.home)
 	}
 	why = append(why, settings.Check(it.Argv).String(m.home), cwd)

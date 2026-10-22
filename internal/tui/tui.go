@@ -157,6 +157,9 @@ func (m *model) refresh() {
 			}
 		}
 	}
+	if keepI != "" && (m.item() == nil || m.item().ID != keepI) {
+		m.advancedAt = m.now() // the selection moved without the user: guard space like an advance
+	}
 	m.open()
 }
 
