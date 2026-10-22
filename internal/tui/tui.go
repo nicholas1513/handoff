@@ -71,6 +71,7 @@ type model struct {
 	scroll   int
 	status   string
 	w, h     int
+	titles   titleCache
 }
 
 func Run(q *queue.Queue, home string) error {
@@ -79,7 +80,7 @@ func Run(q *queue.Queue, home string) error {
 }
 
 func newModel(q *queue.Queue, home string) model {
-	m := model{q: q, home: home, w: 120, h: 40}
+	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}}
 	m.refresh()
 	return m
 }
@@ -335,8 +336,18 @@ func (m model) View() string {
 	h := max(5, m.h-3) // borders + status line
 
 	var srows []string
+	now := time.Now()
 	for _, r := range m.rows {
-		srows = append(srows, sessionLabel(r))
+		title, pending := "", 0
+		if r.sess != nil {
+			title = m.titles.get(r.sess.TranscriptPath)
+		}
+		for _, it := range r.items {
+			if m.q.State(it, now) == queue.Pending {
+				pending++
+			}
+		}
+		srows = append(srows, sessionLabel(r, title, pending, now))
 	}
 	var irows []string
 	if s := m.session(); s != nil {
@@ -391,7 +402,7 @@ func (m model) pane(i, w, h int, title string, rows []string, selected int) stri
 	return st.Width(w - 2).Height(h).MaxHeight(h + 2).Render(strings.Join(lines, "\n"))
 }
 
-func sessionLabel(r sessionRow) string {
+func sessionLabel(r sessionRow, title string, pending int, now time.Time) string {
 	if r.invalid != nil {
 		return warn.Render(fmt.Sprintf("⚠ invalid items (%d)", len(r.invalid)))
 	}
@@ -399,7 +410,30 @@ func sessionLabel(r sessionRow) string {
 	if r.sess == nil {
 		return warn.Render("⚠ "+short) + fmt.Sprintf(" (%d)", len(r.items))
 	}
-	return fmt.Sprintf("✓ %s %s (%d)", short, filepath.Base(r.sess.Cwd), len(r.items))
+	if title == "" {
+		title = short
+	}
+	parts := []string{title, filepath.Base(r.sess.Cwd)}
+	if len(r.items) > 0 {
+		parts = append(parts, age(now.Sub(r.items[0].Created)))
+	}
+	label := strings.Join(parts, " · ")
+	if pending > 0 {
+		label = fmt.Sprintf("● %d %s", pending, label)
+	}
+	return oneLine(label)
+}
+
+func age(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 }
 
 func glyph(state string) string {
