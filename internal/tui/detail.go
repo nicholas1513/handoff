@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -171,7 +172,6 @@ type box struct {
 	lines    []string // one per drawn line, wrapped to the inner width when framed
 	framed   bool
 	cap, top int
-	hint     string // footer key hint
 }
 
 const (
@@ -181,40 +181,38 @@ const (
 
 func (m model) detail() string {
 	var b strings.Builder
-	for _, s := range m.detailSegs() {
+	segs, sel := m.detailSegs(), m.selBox()
+	for _, s := range segs {
 		b.WriteString(s.text)
 		if s.box != nil {
-			b.WriteString(m.render(*s.box))
+			b.WriteString(m.render(*s.box, s.box.id == sel))
 		}
 	}
 	return b.String()
 }
 
-// outCap is the Result box height: 40% of the window, at least 3 lines.
-func (m model) outCap() int { return max(3, m.h*40/100) }
-
-// promptCap is the prompt box height: 20% of the window, at least 3 lines.
-func (m model) promptCap() int { return max(3, m.h*20/100) }
+// capPct is a box height: pct% of the window, at least 3 lines.
+func (m model) capPct(pct int) int { return max(3, m.h*pct/100) }
 
 // boxBg is the framed box's panel colour, visibly lighter than the terminal's.
 var boxBg = lipgloss.AdaptiveColor{Light: "#e8e8ef", Dark: "#2a2e3f"}
 
 // mkBox wraps its text with wrap(width): to the inner width (dw-6) and framed when that is longer than cap, else
-// plainly to dw-2. top is clamped to the lines.
-func (m model) mkBox(id string, wrap func(w int) []string, cap, top int, hint string) box {
+// plainly to dw-2. Its top is m.boxTop[id], clamped to the lines.
+func (m model) mkBox(id string, wrap func(w int) []string, cap int) box {
 	_, _, dw := columns(m.w)
 	if l := wrap(max(1, dw-6)); len(l) > cap {
-		return box{id, l, true, cap, max(0, min(top, len(l)-cap)), hint}
+		return box{id, l, true, cap, max(0, min(m.boxTop[id], len(l)-cap))}
 	}
-	return box{id: id, lines: wrap(dw - 2), cap: cap, hint: hint}
+	return box{id: id, lines: wrap(dw - 2), cap: cap}
 }
 
 // render draws a box and its trailing newline: the framed window, or the plain lines.
-func (m model) render(b box) string {
+func (m model) render(b box, sel bool) string {
 	if !b.framed {
 		return strings.Join(b.lines, "\n") + "\n"
 	}
-	return m.frame(b.lines[b.top:b.top+b.cap], b.top, len(b.lines), b.hint) + "\n"
+	return m.frame(b.lines[b.top:b.top+b.cap], b.top, len(b.lines), sel) + "\n"
 }
 
 // boxes is the framed boxes' first content row in the wrapped detail, and their ids and caps.
@@ -237,6 +235,62 @@ func (m model) boxes() (out []struct {
 		}
 	}
 	return
+}
+
+// selBox is the selected framed box: m.boxSel while it is framed, else the first framed box, else "".
+func (m model) selBox() string {
+	bs := m.boxes()
+	for _, b := range bs {
+		if b.id == m.boxSel {
+			return b.id
+		}
+	}
+	if len(bs) > 0 {
+		return bs[0].id
+	}
+	return ""
+}
+
+// nextBox moves the selection d framed boxes along in display order, stopping at either end.
+func (m *model) nextBox(d int) {
+	bs, sel := m.boxes(), m.selBox()
+	for i, b := range bs {
+		if b.id == sel {
+			m.boxSel = bs[max(0, min(i+d, len(bs)-1))].id
+		}
+	}
+}
+
+// unviewed is a framed attachment box never scrolled to its last line.
+func (m model) unviewed(b box) bool {
+	return b.framed && strings.HasPrefix(b.id, "file:") && !m.seenEnd[b.id]
+}
+
+// unviewedNames are the attachments not yet viewed to the end, in display order.
+func (m model) unviewedNames() (out []string) {
+	for _, s := range m.detailSegs() {
+		if s.box != nil && m.unviewed(*s.box) {
+			out = append(out, sanitize(strings.TrimPrefix(s.box.id, "file:")))
+		}
+	}
+	return
+}
+
+// markSeen records each attachment box whose last line is visible (or that isn't framed at all).
+func (m *model) markSeen() {
+	for _, s := range m.detailSegs() {
+		if b := s.box; b != nil && strings.HasPrefix(b.id, "file:") && !m.seenEnd[b.id] && (!b.framed || b.top+b.cap >= len(b.lines)) {
+			m.seenEnd = with(m.seenEnd, b.id, true)
+		}
+	}
+}
+
+// with returns a copy of mp with k set: models are values, so a shared map would leak state between copies.
+func with[V any](mp map[string]V, k string, v V) map[string]V {
+	c := make(map[string]V, len(mp)+1)
+	maps.Copy(c, mp)
+	c[k] = v
+	return c
 }
 
 // box returns the box with that id, if drawn.
@@ -273,10 +327,13 @@ func scrollbar(cap, total, top int) []string {
 
 // frame draws the visible slice of a long result as a scrollable panel: rounded border, scrollbar in the last
 // inner column, and the line range in the bottom border. Its width is dw-2, the detail wrap width.
-func (m model) frame(rows []string, top, total int, hint string) string {
+func (m model) frame(rows []string, top, total int, sel bool) string {
 	_, _, dw := columns(m.w)
 	outer, inner := dw-2, dw-6
 	edge := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(boxBg)
+	if sel {
+		edge = edge.Foreground(lipgloss.Color("#7aa2f7"))
+	}
 	txt := lipgloss.NewStyle().Background(boxBg)
 	thumb := lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Background(boxBg)
 	bar := scrollbar(len(rows), total, top)
@@ -293,7 +350,7 @@ func (m model) frame(rows []string, top, total int, hint string) string {
 		}
 		out = append(out, edge.Render("│")+st.Render(" "+l+strings.Repeat(" ", max(0, inner-lipgloss.Width(l))))+bs.Render(bar[i])+edge.Render("│"))
 	}
-	foot := ansi.Truncate(fmt.Sprintf("lines %d–%d of %d · %s", top+1, top+len(rows), total, hint), outer-6, "…")
+	foot := ansi.Truncate(fmt.Sprintf("lines %d–%d of %d", top+1, top+len(rows), total), outer-6, "…")
 	out = append(out, edge.Render("╰─ "+foot+" "+strings.Repeat("─", max(0, outer-6-lipgloss.Width(foot)))+"─╯"))
 	return strings.Join(out, "\n")
 }
@@ -304,14 +361,9 @@ func (m *model) scrollBox(id string, d int) {
 	if !ok {
 		return
 	}
-	top := &m.outTop
-	if id == promptBox {
-		top = &m.promptTop
-	}
-	*top = max(0, min(*top+d, len(b.lines)-b.cap))
+	m.boxTop = with(m.boxTop, id, max(0, min(b.top+d, len(b.lines)-b.cap)))
+	m.markSeen()
 }
-
-func (m *model) scrollOut(d int) { m.scrollBox(resultBox, d) }
 
 // boxAt reports which framed box has screen row y as one of its content rows (body line k is at buttonY+1+k-scroll).
 // Border rows don't count.
@@ -345,7 +397,7 @@ func (m *model) clampScroll() {
 	m.scroll = max(0, min(m.scroll, len(m.detailLines())-(max(5, m.h-3)-2)))
 }
 
-// detailSegs is the detail in order: text runs and the Result and prompt boxes.
+// detailSegs is the detail in order: text runs and the Result, prompt and attachment boxes.
 func (m model) detailSegs() []seg {
 	s := m.session()
 	if s != nil && s.invalid != nil && m.ii < len(s.invalid) {
@@ -372,6 +424,19 @@ func (m model) detailSegs() []seg {
 		}
 	}
 
+	var atts []box
+	for _, name := range it.Files {
+		data, err := os.ReadFile(filepath.Join(m.reviewed.SnapDir, name))
+		if err != nil {
+			data = []byte(err.Error())
+		}
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, data, "", "  ") == nil {
+			data = pretty.Bytes()
+		}
+		atts = append(atts, m.mkBox("file:"+name, wrapText(sanitize(string(data))), m.capPct(30)))
+	}
+
 	state := m.q.State(it, time.Now())
 	chips := []string{chip(strings.ToUpper(state), resColor(state))}
 	if mt := methodOf(it.Argv); mt != "" {
@@ -392,6 +457,11 @@ func (m model) detailSegs() []seg {
 	}
 	if state == queue.Pending {
 		chips = append(chips, dim.Render("expires in "+strings.TrimSuffix(time.Until(it.Expires).Round(time.Minute).String(), "0s")))
+	}
+	for _, a := range atts {
+		if m.unviewed(a) {
+			chips = append(chips, chip("📎 "+sanitize(strings.TrimPrefix(a.id, "file:"))+" not fully viewed", "1"))
+		}
 	}
 	p("%s\n", strings.Join(chips, "  "))
 	p("%s\n", bold.Render(sanitize(it.Description)))
@@ -425,7 +495,7 @@ func (m model) detailSegs() []seg {
 				}
 			}
 			return out
-		}, m.outCap(), m.outTop, "[ ] or PgUp/PgDn"))
+		}, m.capPct(40)))
 	} else if !errors.Is(err, os.ErrNotExist) {
 		p("\n%s", heading("Result"))
 		p("%s", warn.Render(sanitize(err.Error())))
@@ -446,7 +516,7 @@ func (m model) detailSegs() []seg {
 	if verified {
 		if pr, err := m.q.PromptBefore(it.SessionID, it.Created); err == nil {
 			p("%s you said:", dim.Render(pr.TS.Format("15:04")))
-			addBox(m.mkBox(promptBox, wrapText(sanitize(pr.Prompt)), m.promptCap(), m.promptTop, "{ }"))
+			addBox(m.mkBox(promptBox, wrapText(sanitize(pr.Prompt)), m.capPct(20)))
 		} else {
 			p("%s", warn.Render("no prompt recorded"))
 		}
@@ -464,17 +534,9 @@ func (m model) detailSegs() []seg {
 	why = append(why, settings.Check(it.Argv).String(m.home), cwd)
 	p("%s", dim.Render(strings.Join(why, " · ")))
 
-	for _, name := range it.Files {
-		data, err := os.ReadFile(filepath.Join(m.reviewed.SnapDir, name))
-		if err != nil {
-			data = []byte(err.Error())
-		}
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, data, "", "  ") == nil {
-			data = pretty.Bytes()
-		}
-		p("\n%s", heading("📎 "+sanitize(name)))
-		p("%s", sanitize(string(data)))
+	for _, a := range atts {
+		p("\n%s", heading("📎 "+sanitize(strings.TrimPrefix(a.id, "file:"))))
+		addBox(a)
 	}
 
 	p("\n%s", heading("Integrity"))

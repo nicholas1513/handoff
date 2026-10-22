@@ -46,10 +46,11 @@ func withPrompt(t *testing.T, m model, pn, rn, h int) model {
 	return nm
 }
 
+// promptFooter is the prompt box's footer, told apart from the Result box's by its 100-line total.
 func promptFooter(m model) string {
 	for _, l := range strings.Split(ansi.Strip(m.detail()), "\n") {
-		if i := strings.Index(l, "lines "); i >= 0 && strings.Contains(l, " · { }") {
-			return l[i:strings.Index(l, " · { }")]
+		if i := strings.Index(l, "lines "); i >= 0 && strings.Contains(l, " of 100 ") {
+			return l[i : strings.Index(l, " of 100 ")+len(" of 100")]
 		}
 	}
 	return ""
@@ -59,7 +60,7 @@ func TestPromptBoxFramedWhenLong(t *testing.T) {
 	_, m := setup(t)
 	m = withPrompt(t, m, 100, 0, 40)
 	d := ansi.Strip(m.detail())
-	if !strings.Contains(d, "lines 1–8 of 100 · { }") {
+	if !strings.Contains(d, "lines 1–8 of 100 ") {
 		t.Fatalf("prompt box not capped at 20%%:\n%s", d)
 	}
 	if n := strings.Count(d, "p0"); n != 8 {
@@ -78,7 +79,7 @@ func TestPromptBoxFramedWhenLong(t *testing.T) {
 	if strings.Index(d, "you said:") > strings.Index(d, "╭") {
 		t.Fatal("label must sit above the box")
 	}
-	if !strings.Contains(ansi.Strip(m.View()), "{ } scroll prompt") {
+	if !strings.Contains(ansi.Strip(m.View()), "[ ] scroll · { } next box") {
 		t.Fatal("status hint missing")
 	}
 }
@@ -86,33 +87,37 @@ func TestPromptBoxFramedWhenLong(t *testing.T) {
 func TestPromptBoxScrollKeys(t *testing.T) {
 	_, m := setup(t)
 	m = withPrompt(t, m, 100, 200, 40)
+	m, _ = press(m, "]") // Result is selected first
+	if f := promptFooter(m); f != "lines 1–8 of 100" || m.boxTop[resultBox] != 16 {
+		t.Fatalf("] on Result: prompt %q, result top %d", f, m.boxTop[resultBox])
+	}
 	m, _ = press(m, "}")
-	if f := promptFooter(m); f != "lines 9–16 of 100" {
-		t.Fatalf("after }: %q", f)
+	if f := promptFooter(m); f != "lines 1–8 of 100" || m.boxSel != promptBox {
+		t.Fatalf("} must only select the prompt: %q sel %q", f, m.boxSel)
 	}
 	m, _ = press(m, "]")
-	if f := promptFooter(m); f != "lines 9–16 of 100" || m.promptTop != 8 {
-		t.Fatalf("] moved the prompt: %q", f)
+	if f := promptFooter(m); f != "lines 9–16 of 100" || m.boxTop[resultBox] != 16 {
+		t.Fatalf("after ]: %q, result top %d", f, m.boxTop[resultBox])
 	}
-	m, _ = press(m, "{")
+	m, _ = press(m, "[")
 	if f := promptFooter(m); f != "lines 1–8 of 100" {
-		t.Fatalf("after {: %q", f)
+		t.Fatalf("after [: %q", f)
 	}
-	out := m.outTop
-	m, _ = press(m, "{")
-	if m.outTop != out || m.promptTop != 0 {
-		t.Fatalf("{ moved outTop %d -> %d", out, m.outTop)
+	m, _ = press(m, "[")
+	if m.boxTop[resultBox] != 16 || m.boxTop[promptBox] != 0 {
+		t.Fatalf("[ at the top moved a box: %v", m.boxTop)
 	}
 	for i := 0; i < 40; i++ {
-		m, _ = press(m, "}")
+		m, _ = press(m, "]")
 	}
 	if f := promptFooter(m); f != "lines 93–100 of 100" {
 		t.Fatalf("end: %q", f)
 	}
 	m.focus = 1
-	m, _ = press(m, "}")
-	if m.promptTop != 92 {
-		t.Fatal("} acted outside focus 2")
+	m, _ = press(m, "{")
+	m, _ = press(m, "[")
+	if m.boxTop[promptBox] != 92 || m.boxSel != promptBox {
+		t.Fatal("{ or [ acted outside focus 2")
 	}
 }
 
@@ -120,10 +125,10 @@ func TestShortPromptNotFramed(t *testing.T) {
 	_, m := setup(t)
 	m = withPrompt(t, m, 1, 0, 40)
 	d := ansi.Strip(m.detail())
-	if strings.Contains(d, "╭") || strings.Contains(d, "{ }") || !strings.Contains(d, "p001") {
+	if strings.Contains(d, "╭") || strings.Contains(d, "lines 1–") || !strings.Contains(d, "p001") {
 		t.Fatal("short prompt must be plain")
 	}
-	if strings.Contains(ansi.Strip(m.View()), "scroll prompt") {
+	if strings.Contains(ansi.Strip(m.View()), "next box") {
 		t.Fatal("hint shown for a short prompt")
 	}
 }
@@ -148,15 +153,15 @@ func TestWheelScrollsTheBoxUnderIt(t *testing.T) {
 	if oy < 0 || py < 0 {
 		t.Fatalf("boxes not drawn: %d %d", oy, py)
 	}
-	if g := wheel(oy); g.outTop != 3 || g.promptTop != 0 {
-		t.Fatalf("result row: outTop %d promptTop %d", g.outTop, g.promptTop)
+	if g := wheel(oy); g.boxTop[resultBox] != 3 || g.boxTop[promptBox] != 0 {
+		t.Fatalf("result row: %v", g.boxTop)
 	}
-	if g := wheel(py); g.promptTop != 3 || g.outTop != 0 {
-		t.Fatalf("prompt row: outTop %d promptTop %d", g.outTop, g.promptTop)
+	if g := wheel(py); g.boxTop[promptBox] != 3 || g.boxTop[resultBox] != 0 {
+		t.Fatalf("prompt row: %v", g.boxTop)
 	}
-	for _, y := range []int{oy - 1, oy + m.outCap(), py - 1, py + m.promptCap()} {
-		if g := wheel(y); g.outTop != 0 || g.promptTop != 0 {
-			t.Fatalf("border row %d moved a box: %d %d", y, g.outTop, g.promptTop)
+	for _, y := range []int{oy - 1, oy + m.capPct(40), py - 1, py + m.capPct(20)} {
+		if g := wheel(y); g.boxTop[resultBox] != 0 || g.boxTop[promptBox] != 0 {
+			t.Fatalf("border row %d moved a box: %v", y, g.boxTop)
 		}
 	}
 }
@@ -164,26 +169,29 @@ func TestWheelScrollsTheBoxUnderIt(t *testing.T) {
 func TestPromptTopResetsOnNewItem(t *testing.T) {
 	_, m := setup(t)
 	m = withPrompt(t, m, 100, 0, 40)
-	m, _ = press(m, "}")
-	if m.promptTop == 0 {
+	m, _ = press(m, "]")
+	if m.boxTop[promptBox] == 0 {
 		t.Fatal("did not scroll")
 	}
 	m.focus = 1
 	m, _ = press(m, "k")
-	if m.promptTop != 0 {
-		t.Fatalf("promptTop %d after opening another item", m.promptTop)
+	if m.boxTop[promptBox] != 0 {
+		t.Fatalf("prompt top %d after opening another item", m.boxTop[promptBox])
 	}
 }
 
 func TestBracesWhileArmedOnlyCancel(t *testing.T) {
 	_, m := setup(t)
-	m.focus, m.promptTop = 2, 5
+	m = withPrompt(t, m, 100, 0, 40)
+	m.advancedAt = time.Time{}
 	m, _ = press(m, " ")
 	if !m.armed {
 		t.Fatal("not armed")
 	}
 	m, _ = press(m, "}")
-	if m.armed || m.promptTop != 5 {
-		t.Fatalf("armed=%v promptTop=%d", m.armed, m.promptTop)
+	m, _ = press(m, " ")
+	m, _ = press(m, "]")
+	if m.armed || m.boxSel != "" || m.boxTop[promptBox] != 0 {
+		t.Fatalf("armed=%v sel=%q top=%v", m.armed, m.boxSel, m.boxTop)
 	}
 }

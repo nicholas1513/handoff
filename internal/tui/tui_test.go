@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -761,8 +762,8 @@ func withResult(t *testing.T, m model, n int) model {
 
 func outLines(m model) (n int, footer string) {
 	for _, l := range strings.Split(ansi.Strip(m.detail()), "\n") {
-		if i := strings.Index(l, "lines "); i >= 0 && strings.Contains(l, " · [ ]") {
-			footer = l[i:strings.Index(l, " · [ ]")] // in the box's bottom border
+		if i := strings.Index(l, "lines "); i >= 0 && strings.HasPrefix(l, "╰") {
+			footer = strings.TrimRight(l[i:], " ─╯") // in the box's bottom border
 		}
 		l = strings.Trim(l, "│┃ ")
 		if strings.HasPrefix(l, "out") {
@@ -798,8 +799,8 @@ func TestResultBoxCapped(t *testing.T) {
 	m, _ = press(m, "]")
 	m.focus = 1
 	m, _ = press(m, "k") // another item opens: back to line 1
-	if m.outTop != 0 {
-		t.Fatalf("outTop %d after opening another item", m.outTop)
+	if m.boxTop[resultBox] != 0 {
+		t.Fatalf("result top %d after opening another item", m.boxTop[resultBox])
 	}
 }
 
@@ -809,8 +810,8 @@ func TestResultBoxWheelAndPgKeys(t *testing.T) {
 	m.focus = 2
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	m = next.(model)
-	if m.outTop != 16 {
-		t.Fatalf("pgdown outTop %d", m.outTop)
+	if m.boxTop[resultBox] != 16 {
+		t.Fatalf("pgdown result top %d", m.boxTop[resultBox])
 	}
 	_, iw, _ := columns(m.w)
 	sw, _, _ := columns(m.w)
@@ -827,27 +828,27 @@ func TestResultBoxWheelAndPgKeys(t *testing.T) {
 	if y < 0 {
 		t.Fatal("box not drawn")
 	}
-	if got := wheel(m, y).outTop; got != 19 {
-		t.Fatalf("wheel over box outTop %d, want 19", got)
+	if got := wheel(m, y).boxTop[resultBox]; got != 19 {
+		t.Fatalf("wheel over box result top %d, want 19", got)
 	}
-	if got := wheel(m, y-1).outTop; got != 16 { // the box's top border
-		t.Fatalf("wheel on the top border moved outTop to %d", got)
+	if got := wheel(m, y-1).boxTop[resultBox]; got != 16 { // the box's top border
+		t.Fatalf("wheel on the top border moved the result top to %d", got)
 	}
-	if got := wheel(m, y-2).outTop; got != 16 { // the exit line above the border
-		t.Fatalf("wheel above the box moved outTop to %d", got)
+	if got := wheel(m, y-2).boxTop[resultBox]; got != 16 { // the exit line above the border
+		t.Fatalf("wheel above the box moved the result top to %d", got)
 	}
-	if got := wheel(m, y+m.outCap()).outTop; got != 16 { // the bottom border
-		t.Fatalf("wheel on the bottom border moved outTop to %d", got)
+	if got := wheel(m, y+m.capPct(40)).boxTop[resultBox]; got != 16 { // the bottom border
+		t.Fatalf("wheel on the bottom border moved the result top to %d", got)
 	}
-	if got := wheel(m, y+m.outCap()-1).outTop; got != 19 { // last content row
-		t.Fatalf("wheel on the last box row outTop %d, want 19", got)
+	if got := wheel(m, y+m.capPct(40)-1).boxTop[resultBox]; got != 19 { // last content row
+		t.Fatalf("wheel on the last box row result top %d, want 19", got)
 	}
-	if got := wheel(m, 2).outTop; got != 16 {
-		t.Fatalf("wheel off box moved outTop to %d", got)
+	if got := wheel(m, 2).boxTop[resultBox]; got != 16 {
+		t.Fatalf("wheel off box moved the result top to %d", got)
 	}
 }
 
-func TestOnlyResultIsCapped(t *testing.T) {
+func TestOnlyBoxesAreCapped(t *testing.T) {
 	_, m := setup(t)
 	var b strings.Builder
 	for i := 1; i <= 200; i++ {
@@ -865,13 +866,10 @@ func TestOnlyResultIsCapped(t *testing.T) {
 	m.q.Claim(it)
 	m.q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: time.Now(), Stdout: o.String()})
 	d := ansi.Strip(m.detail())
-	for i := 1; i <= 200; i++ {
-		if !strings.Contains(d, fmt.Sprintf("att%03d", i)) {
-			t.Fatalf("attachment line %d missing from the detail", i)
+	for _, want := range []string{fmt.Sprintf("lines 1–%d of 201", m.capPct(40)), fmt.Sprintf("lines 1–%d of 200", m.capPct(30))} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("result or attachment box not capped, want %q", want)
 		}
-	}
-	if want := fmt.Sprintf("lines 1–%d of 201", m.outCap()); !strings.Contains(d, want) {
-		t.Fatalf("result box not capped, want %q", want)
 	}
 	if f := flatten(m.detail()); !strings.Contains(f, desc) || !strings.Contains(f, val) {
 		t.Fatal("description or argv value cut")
@@ -880,14 +878,14 @@ func TestOnlyResultIsCapped(t *testing.T) {
 
 func TestBracketWhileArmedOnlyCancels(t *testing.T) {
 	_, m := setup(t)
-	m.focus, m.outTop = 2, 5
+	m.focus, m.boxTop = 2, map[string]int{resultBox: 5}
 	m, _ = press(m, " ")
 	if !m.armed {
 		t.Fatal("not armed")
 	}
 	m, _ = press(m, "]")
-	if m.armed || m.outTop != 5 {
-		t.Fatalf("armed=%v outTop=%d", m.armed, m.outTop)
+	if m.armed || m.boxTop[resultBox] != 5 {
+		t.Fatalf("armed=%v top=%v", m.armed, m.boxTop)
 	}
 }
 
@@ -1028,10 +1026,13 @@ func TestResultBoxFramed(t *testing.T) {
 	if !strings.Contains(d, "╭") || !strings.Contains(d, "╰") {
 		t.Fatal("detail has no box border")
 	}
-	for _, want := range []string{"╭", "╰", "lines 1–", "[ ] or PgUp/PgDn", "┃"} {
+	for _, want := range []string{"╭", "╰", "lines 1–", "┃"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("view lacks %q", want)
 		}
+	}
+	if !regexp.MustCompile(`lines 1–16 of \d+ ─`).MatchString(v) {
+		t.Fatal("footer is not just the line range")
 	}
 	if !strings.Contains(raw, "48;2;") {
 		t.Fatal("no background colour on the box")
@@ -1045,7 +1046,7 @@ func TestShortResultNotFramed(t *testing.T) {
 	_, m := setup(t)
 	m = resultView(t, m, 3, 160, 40)
 	v := ansi.Strip(m.detail()) // the panes draw their own rounded borders, so look at the detail alone
-	if strings.Contains(v, "╭") || strings.Contains(v, "[ ] or PgUp/PgDn") || !strings.Contains(v, "out003") {
+	if strings.Contains(v, "╭") || strings.Contains(v, "lines 1–") || !strings.Contains(v, "out003") {
 		t.Fatal("short result must be plain")
 	}
 }
@@ -1054,16 +1055,16 @@ func TestScrollOutputHintOnStatusLine(t *testing.T) {
 	_, m := setup(t)
 	long := resultView(t, m, 200, 160, 40)
 	long.focus = 2
-	if !strings.Contains(ansi.Strip(long.View()), "[ ] scroll output") {
+	if !strings.Contains(ansi.Strip(long.View()), "[ ] scroll · { } next box") {
 		t.Fatal("hint missing for a framed box at focus 2")
 	}
 	long.focus = 1
-	if strings.Contains(ansi.Strip(long.View()), "[ ] scroll output") {
+	if strings.Contains(ansi.Strip(long.View()), "[ ] scroll · { } next box") {
 		t.Fatal("hint shown at focus 1")
 	}
 	short := resultView(t, m, 3, 160, 40)
 	short.focus = 2
-	if strings.Contains(ansi.Strip(short.View()), "[ ] scroll output") {
+	if strings.Contains(ansi.Strip(short.View()), "[ ] scroll · { } next box") {
 		t.Fatal("hint shown for a short result")
 	}
 }
@@ -1078,8 +1079,7 @@ func TestFramedBoxWrapsToInnerWidth(t *testing.T) {
 		}
 	}
 	// the long line is out999 + 120 x's; scroll to it and check nothing is lost
-	m.outTop = 1 << 20
-	m.scrollOut(0)
+	m.scrollBox(resultBox, 1<<20)
 	var rows []string
 	for _, l := range strings.Split(ansi.Strip(m.detail()), "\n") {
 		if i := strings.Index(l, "out999"); i >= 0 || strings.Contains(l, "xxx") {
