@@ -547,7 +547,14 @@ func (m model) View() string {
 	body := strings.Split(lipgloss.NewStyle().Width(dw-2).Render(m.detail()), "\n")
 	body = body[min(m.scroll, max(0, len(body)-1)):]
 
-	status := dim.Render("↑↓ move · tab/click pane · space space run · x reject · o re-open · q quit")
+	keys := []string{"↑↓ move", "tab/click pane"}
+	if m.focus > 0 && m.pending() {
+		keys = append(keys, "space space run", "x reject")
+	}
+	if m.changed {
+		keys = append(keys, "o re-open")
+	}
+	status := dim.Render(strings.Join(append(keys, "q quit"), " · "))
 	if m.status != "" {
 		status = m.status + dim.Render("  ·  ") + status
 	}

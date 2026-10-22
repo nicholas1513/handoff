@@ -611,11 +611,30 @@ func TestSectionHeadersShareOneStyle(t *testing.T) {
 	}
 }
 
-func TestKeyHelpStaysAfterAction(t *testing.T) {
+func statusLine(m model) string { v := m.View(); return v[strings.LastIndex(v, "\n")+1:] }
+
+func TestKeyHelpOnlyForPendingItemInFocus(t *testing.T) {
 	_, m := setup(t)
-	m, _ = press(m, "x")
-	v := m.View()
-	if !strings.Contains(v, "rejected") || !strings.Contains(v, "space space run") || !strings.Contains(v, "x reject") {
-		t.Fatalf("status line lost the key help after an action:\n%s", v[strings.LastIndex(v, "\n")+1:])
+	m.focus = 0
+	if l := statusLine(m); strings.Contains(l, "space space run") || !strings.Contains(l, "q quit") {
+		t.Fatalf("sessions focus: %q", l)
+	}
+	for _, f := range []int{1, 2} {
+		m.focus = f
+		if l := statusLine(m); !strings.Contains(l, "space space run") || !strings.Contains(l, "x reject") {
+			t.Fatalf("focus %d on pending item: %q", f, l)
+		}
+	}
+	m.focus = 1
+	m, _ = press(m, "x") // rejects "second", advances to pending "first"
+	if l := statusLine(m); !strings.Contains(l, "rejected") || !strings.Contains(l, "space space run") {
+		t.Fatalf("after reject, on pending: %q", l)
+	}
+	m, _ = press(m, "x") // rejects "first"; nothing pending, selection stays on it
+	if l := statusLine(m); strings.Contains(l, "space space run") || strings.Contains(l, "x reject") || !strings.Contains(l, "q quit") {
+		t.Fatalf("on finished item: %q", l)
+	}
+	if strings.Contains(statusLine(m), "o re-open") {
+		t.Fatal("o re-open shown without a change on disk")
 	}
 }
