@@ -200,6 +200,7 @@ func (m *model) open() {
 	}
 	if m.reviewed != nil && m.reviewed.Item.ID == it.ID {
 		m.changed = m.q.State(*it, time.Now()) == queue.Pending && m.q.Verify(*m.reviewed) != nil
+		m.clampScroll()
 		return
 	}
 	r, err := m.q.Snapshot(it.ID)
@@ -221,6 +222,7 @@ func (m *model) move(d int) {
 		m.scroll = max(0, m.scroll+d)
 	}
 	m.open()
+	m.clampScroll()
 }
 
 func outstanding(st string) bool { return st == queue.Pending || st == queue.Running }
@@ -435,6 +437,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+		m.clampScroll()
 	case tickMsg:
 		m.refresh()
 		return m, tick()
@@ -607,7 +610,7 @@ func (m model) View() string {
 			header = warn.Render(armedBtn)
 		}
 	}
-	body := strings.Split(lipgloss.NewStyle().Width(dw-2).Render(m.detail()), "\n")
+	body := m.detailLines()
 	body = body[m.bodyTop(len(body)):]
 
 	keys := []string{"↑↓ move", "tab/click pane"}

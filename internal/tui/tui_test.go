@@ -880,3 +880,79 @@ func TestBracketWhileArmedOnlyCancels(t *testing.T) {
 		t.Fatalf("armed=%v outTop=%d", m.armed, m.outTop)
 	}
 }
+
+func TestResultComesFirstForFinishedItem(t *testing.T) {
+	_, m := setup(t)
+	d := ansi.Strip(m.detail())
+	if strings.Contains(d, "── Result") || strings.Index(d, "── Command") < 0 {
+		t.Fatal("pending item: want Command and no Result")
+	}
+	if strings.Index(d, "── Command") > strings.Index(d, "── Why") {
+		t.Fatal("pending order changed")
+	}
+	m = withResult(t, m, 200)
+	d = ansi.Strip(m.detail())
+	r, f, c := strings.Index(d, "── Result"), strings.Index(d, "lines 1–"), strings.Index(d, "── Command")
+	if r < 0 || f < 0 || c < 0 || r > f || f > c {
+		t.Fatalf("order: result %d footer %d command %d", r, f, c)
+	}
+}
+
+func TestResultBoxVisibleOnScreen(t *testing.T) {
+	_, m := setup(t)
+	url := "https://management.azure.com/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example/providers/Microsoft.Web/sites/app-example/config/appsettings?api-version=2023-01-01"
+	m = withItem(t, m, queue.Item{Description: "list app settings", Reason: "check config", Argv: []string{"az", "rest", "--method", "get", "--url", url}}, nil, 160)
+	it := *m.item()
+	var o strings.Builder
+	for i := 1; i <= 301; i++ {
+		fmt.Fprintf(&o, "out%03d\n", i)
+	}
+	m.q.Claim(it)
+	m.q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: time.Now(), Stdout: o.String()})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = next.(model)
+	if !strings.Contains(ansi.Strip(m.View()), "lines 1–") {
+		t.Fatal("result footer not on screen without scrolling")
+	}
+}
+
+func TestDetailScrollBoundedWhenContentFits(t *testing.T) {
+	_, m := setup(t)
+	m.focus = 2
+	v := m.View()
+	for i := 0; i < 5; i++ {
+		m, _ = press(m, "j")
+	}
+	if m.scroll != 0 || m.View() != v {
+		t.Fatalf("scroll %d on content that fits", m.scroll)
+	}
+}
+
+func TestDetailScrollStopsAtEnd(t *testing.T) {
+	_, m := setup(t)
+	m = withItem(t, m, queue.Item{Description: "long", Argv: []string{"/usr/bin/true", "--body", "@{file:a.txt}"}}, map[string]string{"a.txt": longFile(t, 200)}, 120)
+	m.focus = 2
+	for i := 0; i < 400; i++ {
+		m, _ = press(m, "j")
+	}
+	lines := strings.Split(lipgloss.NewStyle().Width(columnsDW(m)-2).Render(m.detail()), "\n")
+	want := len(lines) - (max(5, m.h-3) - 1)
+	if m.scroll != want || want <= 0 {
+		t.Fatalf("scroll %d, want %d", m.scroll, want)
+	}
+	if !strings.Contains(ansi.Strip(m.View()), strings.TrimSpace(ansi.Strip(lines[len(lines)-1]))) {
+		t.Fatal("last detail line not on screen")
+	}
+}
+
+func columnsDW(m model) int { _, _, dw := columns(m.w); return dw }
+
+func longFile(t *testing.T, n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "att%03d\n", i)
+	}
+	p := filepath.Join(t.TempDir(), "a.txt")
+	os.WriteFile(p, []byte(b.String()), 0o600)
+	return p
+}
