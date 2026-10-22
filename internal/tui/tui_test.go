@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -636,5 +637,226 @@ func TestKeyHelpOnlyForPendingItemInFocus(t *testing.T) {
 	}
 	if strings.Contains(statusLine(m), "o re-open") {
 		t.Fatal("o re-open shown without a change on disk")
+	}
+}
+
+// manyItems stages n pending items "item00".. in one session; Height 12 leaves 8 item rows.
+func manyItems(t *testing.T, n int) model {
+	t.Helper()
+	q := &queue.Queue{Root: t.TempDir()}
+	q.WriteSession(queue.Session{SessionID: sid, Cwd: t.TempDir()})
+	for i := 0; i < n; i++ {
+		if _, err := q.Add(queue.Item{Description: fmt.Sprintf("item%02d", i), Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: sid}, nil); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	next, _ := newModel(q, t.TempDir()).Update(tea.WindowSizeMsg{Width: 120, Height: 12})
+	return next.(model)
+}
+
+// itemsCol is the drawn items-pane line at screen row y, stripped, without its border.
+func itemsCol(m model, y int) string {
+	sw, iw, _ := columns(m.w)
+	line := strings.Split(m.View(), "\n")[y]
+	return strings.TrimSpace(ansi.Strip(ansi.Cut(line, sw+1, sw+iw-1)))
+}
+
+func drawnItems(m model) (out []string) {
+	for y := listTop; y < max(5, m.h-3)+1; y++ {
+		out = append(out, itemsCol(m, y))
+	}
+	return
+}
+
+func TestItemsPaneScrollsToSelection(t *testing.T) {
+	m := manyItems(t, 20)
+	m.focus = 1
+	for i := 0; i < 12; i++ {
+		m, _ = press(m, "j")
+	}
+	rows := drawnItems(m)
+	if !strings.Contains(strings.Join(rows, "\n"), "item12") || !strings.HasPrefix(rows[0], "↑ ") || !strings.HasSuffix(rows[0], " more") {
+		t.Fatalf("want item12 drawn under an up indicator: %q", rows)
+	}
+	for i := 0; i < 30; i++ { // and back to the top: no up indicator, first rows drawn
+		m, _ = press(m, "k")
+	}
+	if rows = drawnItems(m); strings.Contains(rows[0], "↑") || !strings.Contains(rows[1], "item00") {
+		t.Fatalf("top not restored: %q", rows)
+	}
+}
+
+func TestClickOnScrolledListSelectsDrawnItem(t *testing.T) {
+	m := manyItems(t, 20)
+	m.focus = 1
+	for i := 0; i < 15; i++ {
+		m, _ = press(m, "j")
+	}
+	sw, _, _ := columns(m.w)
+	for y := listTop; y < max(5, m.h-3)+1; y++ {
+		drawn := itemsCol(m, y)
+		before := m.item().Description
+		m, _ = click(m, sw+3, y)
+		got := m.item().Description
+		if strings.Contains(drawn, "more") || strings.Contains(drawn, "Outstanding") {
+			if got != before {
+				t.Fatalf("row %d (%q) is inert but selection %q -> %q", y, drawn, before, got)
+			}
+		} else if !strings.HasSuffix(drawn, got) {
+			t.Fatalf("row %d drawn %q but selected %q", y, drawn, got)
+		}
+	}
+}
+
+func TestAutoJumpKeepsSelectionVisible(t *testing.T) {
+	m := manyItems(t, 20)
+	for _, it := range m.session().items { // all finished: completed list, 20 rows
+		m.q.Claim(it)
+		m.q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: time.Now()})
+	}
+	m.refresh()
+	m.focus = 1
+	for i := 0; i < 25; i++ {
+		m, _ = press(m, "j") // scrolled to the bottom of the list
+	}
+	if _, err := m.q.Add(queue.Item{Description: "fresh", Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := m.Update(tickMsg(time.Now())) // the new pending item pulls the selection to the top
+	m = next.(model)
+	if m.item().Description != "fresh" {
+		t.Fatalf("selected %q", m.item().Description)
+	}
+	if rows := drawnItems(m); !strings.Contains(strings.Join(rows, "\n"), "fresh") || strings.Contains(rows[0], "↑") {
+		t.Fatalf("selected row not drawn: %q", rows)
+	}
+}
+
+// withResult stages an item whose result holds stdout of n lines "out001".. and returns the model on it.
+func withResult(t *testing.T, m model, n int) model {
+	t.Helper()
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "out%03d\n", i)
+	}
+	it, err := m.q.Add(queue.Item{Description: "res", Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: sid}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.q.Claim(it)
+	m.q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: time.Now(), Stdout: b.String()})
+	nm := newModel(m.q, m.home)
+	for i, x := range nm.session().items {
+		if x.ID == it.ID {
+			nm.ii = i
+		}
+	}
+	nm.open()
+	next, _ := nm.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return next.(model)
+}
+
+func outLines(m model) (n int, footer string) {
+	for _, l := range strings.Split(ansi.Strip(m.detail()), "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "out") {
+			n++
+		}
+		if strings.HasPrefix(l, "lines ") {
+			footer = l
+		}
+	}
+	return
+}
+
+func TestResultBoxCapped(t *testing.T) {
+	_, m := setup(t)
+	m = withResult(t, m, 200)
+	m.focus = 2
+	c := 40 * 40 / 100
+	// the "stdout" label takes one box line, so 200 output lines plus it make 201
+	if n, f := outLines(m); n > c || f != fmt.Sprintf("lines 1–%d of 201", c) {
+		t.Fatalf("n=%d footer=%q", n, f)
+	}
+	m, _ = press(m, "]")
+	if _, f := outLines(m); f != fmt.Sprintf("lines %d–%d of 201", c+1, 2*c) {
+		t.Fatalf("after ]: %q", f)
+	}
+	m, _ = press(m, "[")
+	if _, f := outLines(m); f != fmt.Sprintf("lines 1–%d of 201", c) {
+		t.Fatalf("after [: %q", f)
+	}
+	for i := 0; i < 40; i++ { // clamps at the end
+		m, _ = press(m, "]")
+	}
+	if n, f := outLines(m); f != "lines 186–201 of 201" || n != c {
+		t.Fatalf("end: n=%d %q", n, f)
+	}
+	m, _ = press(m, "]")
+	m.focus = 1
+	m, _ = press(m, "k") // another item opens: back to line 1
+	if m.outTop != 0 {
+		t.Fatalf("outTop %d after opening another item", m.outTop)
+	}
+}
+
+func TestResultBoxWheelAndPgKeys(t *testing.T) {
+	_, m := setup(t)
+	m = withResult(t, m, 200)
+	m.focus = 2
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = next.(model)
+	if m.outTop != 16 {
+		t.Fatalf("pgdown outTop %d", m.outTop)
+	}
+	_, iw, _ := columns(m.w)
+	sw, _, _ := columns(m.w)
+	wheel := func(m model, y int) model {
+		n, _ := m.Update(tea.MouseMsg{X: sw + iw + 5, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+		return n.(model)
+	}
+	y := -1
+	for i, l := range strings.Split(ansi.Strip(m.View()), "\n") {
+		if strings.Contains(l, "out0") && y < 0 {
+			y = i
+		}
+	}
+	if y < 0 {
+		t.Fatal("box not drawn")
+	}
+	if got := wheel(m, y).outTop; got != 19 {
+		t.Fatalf("wheel over box outTop %d, want 19", got)
+	}
+	if got := wheel(m, 2).outTop; got != 16 {
+		t.Fatalf("wheel off box moved outTop to %d", got)
+	}
+}
+
+func TestOnlyResultIsCapped(t *testing.T) {
+	_, m := setup(t)
+	var b strings.Builder
+	for i := 1; i <= 200; i++ {
+		fmt.Fprintf(&b, "att%03d\n", i)
+	}
+	src := filepath.Join(t.TempDir(), "a.txt")
+	os.WriteFile(src, []byte(b.String()), 0o600)
+	m = withItem(t, m, queue.Item{Description: "a", Argv: []string{"/usr/bin/true", "{file:a.txt}"}}, map[string]string{"a.txt": src}, 120)
+	d := ansi.Strip(m.detail())
+	if !strings.Contains(d, "att001") || !strings.Contains(d, "att200") || strings.Contains(d, "lines 1–") {
+		t.Fatal("attachment was capped")
+	}
+}
+
+func TestBracketWhileArmedOnlyCancels(t *testing.T) {
+	_, m := setup(t)
+	m.focus, m.outTop = 2, 5
+	m, _ = press(m, " ")
+	if !m.armed {
+		t.Fatal("not armed")
+	}
+	m, _ = press(m, "]")
+	if m.armed || m.outTop != 5 {
+		t.Fatalf("armed=%v outTop=%d", m.armed, m.outTop)
 	}
 }
