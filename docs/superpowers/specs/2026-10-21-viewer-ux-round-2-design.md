@@ -116,6 +116,14 @@ order they meant. If nothing is pending, the selection stays where it is. Focus 
 panes. The 2s refresh must not undo the jump: today, `refresh` re-selects by the kept item id,
 so the advance has to update that kept id.
 
+**Added after the first real use (user decision):** a pending item that **arrives** also pulls the
+selection when the selected item is finished (succeeded, failed, rejected, expired or modified,
+meaning not pending and not running). On refresh, if the selected item isn't pending or running and
+the same session has a pending item, select the oldest pending one, using the same rules as above
+(set `advancedAt` so the 1s `space` guard applies). Never pull away from a pending or running item,
+and never across sessions. In real use agents stage one item at a time, so without this rule the
+item-to-item advance almost never fired.
+
 ### 4. Keys
 
 - `space`: on a pending item, arms the run, and the button row shows a red "space again to
