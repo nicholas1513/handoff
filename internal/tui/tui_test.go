@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -369,5 +370,69 @@ func TestStayOnFinishedWhileOthersPending(t *testing.T) {
 	m = tickM(m)
 	if m.item().Description != "second" {
 		t.Fatalf("tick dragged selection to %q", m.item().Description)
+	}
+}
+
+func captureCopy(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	old := copyToClipboard
+	copyToClipboard = func(s string) error { got = append(got, s); return nil }
+	t.Cleanup(func() { copyToClipboard = old })
+	return &got
+}
+
+func runCmd(cmd tea.Cmd) {
+	if cmd != nil {
+		cmd()
+	}
+}
+
+func TestCopyKeyCopiesShasumInput(t *testing.T) {
+	_, m := setup(t)
+	got := captureCopy(t)
+	if !strings.Contains(m.View(), "c copy hashes") {
+		t.Fatal("help lacks c copy hashes")
+	}
+	m, cmd := press(m, "c")
+	runCmd(cmd)
+	var want string
+	for _, f := range m.reviewed.FileHashes {
+		want += f.SHA256 + "  " + f.Path + "\n"
+	}
+	if len(*got) != 1 || (*got)[0] != want || strings.Contains(want, "~") || strings.Contains(want, m.reviewed.Hash) {
+		t.Fatalf("copied %q, want %q", *got, want)
+	}
+	if !strings.Contains(m.status, "copied 1 hashes · pbpaste | shasum -a 256 -c") {
+		t.Fatalf("status = %q", m.status)
+	}
+	if _, err := exec.LookPath("shasum"); err != nil {
+		t.Skip("no shasum")
+	}
+	f := filepath.Join(t.TempDir(), "sums")
+	os.WriteFile(f, []byte((*got)[0]), 0o600)
+	if out, err := exec.Command("shasum", "-a", "256", "-c", f).CombinedOutput(); err != nil {
+		t.Fatalf("shasum -c: %v\n%s", err, out)
+	}
+}
+
+func TestCopyKeyNothingSelected(t *testing.T) {
+	m := newModel(&queue.Queue{Root: t.TempDir()}, t.TempDir())
+	got := captureCopy(t)
+	m, cmd := press(m, "c")
+	runCmd(cmd)
+	if len(*got) != 0 || m.status != "nothing to copy" {
+		t.Fatalf("got %q status %q", *got, m.status)
+	}
+}
+
+func TestCopyKeyWhileArmedOnlyCancels(t *testing.T) {
+	_, m := setup(t)
+	got := captureCopy(t)
+	m, _ = press(m, " ")
+	m, cmd := press(m, "c")
+	runCmd(cmd)
+	if m.armed || len(*got) != 0 {
+		t.Fatalf("armed=%v captured=%q", m.armed, *got)
 	}
 }

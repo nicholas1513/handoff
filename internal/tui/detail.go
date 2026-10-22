@@ -264,8 +264,6 @@ func (m model) detail() string {
 	}
 
 	p("\n%s", heading("Integrity"))
-	p("%s", dim.Render("SHA-256 (combined: item.json + attachments)"))
-	p("%s", dim.Render(m.reviewed.Hash))
 	for _, f := range m.reviewed.FileHashes {
 		name, path := sanitize(f.Name), sanitize(f.Path)
 		if f.Name != "item.json" {
@@ -276,6 +274,7 @@ func (m model) detail() string {
 		}
 		p("%s\n%s", name, dim.Render(f.SHA256+"  "+path))
 	}
+	p("%s\n%s", dim.Render("combined (internal; not comparable to shasum)"), dim.Render(m.reviewed.Hash))
 
 	if res, err := m.q.ReadResult(it); err == nil {
 		p("\n%s", heading("Result"))
