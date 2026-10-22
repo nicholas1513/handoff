@@ -160,6 +160,14 @@ func (m *model) refresh() {
 	if keepI != "" && (m.item() == nil || m.item().ID != keepI) {
 		m.advancedAt = m.now() // the selection moved without the user: guard space like an advance
 	}
+	// a new item arriving after the selection finished pulls the selection onto it (same session only)
+	if it := m.item(); it != nil && !m.running {
+		if st := m.q.State(*it, time.Now()); st != queue.Pending && st != queue.Running {
+			if best, ok := m.oldestPending(m.session()); ok {
+				m.ii, m.advancedAt, m.reviewed = best, m.now(), nil
+			}
+		}
+	}
 	m.open()
 }
 
@@ -241,17 +249,21 @@ func (m *model) advance(fromID string) {
 	if s == nil || cur == nil || cur.ID != fromID {
 		return
 	}
+	if best, ok := m.oldestPending(s); ok {
+		m.ii, m.advancedAt, m.reviewed = best, m.now(), nil
+		m.open()
+	}
+}
+
+// oldestPending is the index of the row's pending item with the earliest Created (first in list order on a tie).
+func (m *model) oldestPending(s *sessionRow) (int, bool) {
 	best := -1
 	for i, it := range s.items {
 		if m.q.State(it, time.Now()) == queue.Pending && (best < 0 || it.Created.Before(s.items[best].Created)) {
 			best = i
 		}
 	}
-	if best < 0 {
-		return
-	}
-	m.ii, m.advancedAt, m.reviewed = best, m.now(), nil
-	m.open()
+	return best, best >= 0
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
