@@ -3,8 +3,10 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -35,14 +37,45 @@ func TestCommandLinesShowEveryElementVerbatim(t *testing.T) {
 		{"bash", "-c", "echo hi; rm -rf ~/x"},
 		{"--foo", "bar"},
 		{"-X", "POST", "https://x.test"},
+		{"terraform", "apply", "-var", "x=1\n  -target=module.safe", "https://h/a/b\n  --dry-run"},
 	}
 	for _, argv := range cases {
 		got := flatten(strings.Join(commandLines(argv, map[string]int{"body.json": 6100}), "\n"))
 		for _, a := range argv {
-			if !strings.Contains(got, sanitize(a)) {
-				t.Errorf("argv %q: element %q missing from %q", argv, a, got)
+			want := sanitize(a)
+			if strings.ContainsFunc(want, unicode.IsSpace) { // shown Go-quoted so it reads as one word
+				want = strconv.Quote(want)
+			}
+			if !strings.Contains(got, want) {
+				t.Errorf("argv %q: element %q missing from %q", argv, want, got)
 			}
 		}
+	}
+}
+
+func TestWhitespaceCannotForgeArgs(t *testing.T) {
+	argv := []string{"terraform", "apply", "-var", "x=1\n  -target=module.safe", "-auto-approve", "https://h/a/b\n  --dry-run"}
+	for _, l := range strings.Split(ansi.Strip(strings.Join(commandLines(argv, nil), "\n")), "\n") {
+		if l = strings.TrimLeft(l, " "); strings.HasPrefix(l, "-target") || strings.HasPrefix(l, "--dry-run") {
+			t.Errorf("forged argument line %q", l)
+		}
+	}
+	for want, argv := range map[string][]string{
+		`curl ""`:                 {"curl", "", "--x"},
+		`git "push origin"`:       {"git", "push origin"},
+		`git "\"push" "origin\""`: {"git", `"push`, `origin"`},
+	} {
+		if got := ansi.Strip(commandLines(argv, nil)[0]); got != want {
+			t.Errorf("head of %q = %q want %q", argv, got, want)
+		}
+	}
+}
+
+func TestCommandLinesKeepArgvOrder(t *testing.T) {
+	got := ansi.Strip(strings.Join(commandLines([]string{"cmd", "-a", "x", "pos1", "-b", "y"}, nil), "\n"))
+	a, p, b := strings.Index(got, "-a"), strings.Index(got, "pos1"), strings.Index(got, "-b")
+	if a < 0 || !(a < p && p < b) {
+		t.Errorf("argv order lost: %q", got)
 	}
 }
 
@@ -50,6 +83,7 @@ func TestMethodOf(t *testing.T) {
 	for want, argv := range map[string][]string{
 		"PUT": {"az", "rest", "--method", "put"}, "GET": {"az", "rest", "--method=get"},
 		"POST": {"curl", "-X", "POST"}, "": {"az", "account", "show"},
+		"DELETE": {"az", "rest", "--method", "GET", "--url", "u", "--method", "delete"},
 	} {
 		if got := methodOf(argv); got != want {
 			t.Errorf("methodOf(%q) = %q want %q", argv, got, want)
@@ -126,5 +160,18 @@ func TestDetailPrettyPrintsJSONAttachment(t *testing.T) {
 	out := ansi.Strip(m.detail())
 	if !strings.Contains(out, "── 📎 body.json") || !strings.Contains(out, `"a": 1`) {
 		t.Fatalf("attachment not pretty-printed under its heading:\n%s", out)
+	}
+}
+
+func TestCwdHomeShortening(t *testing.T) {
+	_, m := setup(t)
+	cwd := m.reviewed.Item.Cwd
+	m.home = filepath.Dir(cwd)
+	if out := ansi.Strip(m.detail()); !strings.Contains(out, "~/"+filepath.Base(cwd)) {
+		t.Errorf("cwd under home not shortened:\n%s", out)
+	}
+	m.home = cwd[:len(cwd)-1] // a sibling: /x/00 vs /x/001
+	if out := ansi.Strip(m.detail()); !strings.Contains(out, cwd) {
+		t.Errorf("sibling of home was shortened:\n%s", out)
 	}
 }
