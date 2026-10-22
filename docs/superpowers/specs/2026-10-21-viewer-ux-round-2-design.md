@@ -123,6 +123,19 @@ session keyed on the transcript's mtime and size. Sanitize the title and cut it 
 Unverified sessions (no hook record) keep the red `⚠ <short id>` label. They have no transcript
 path to read.
 
+### 2b. Items pane in two sections (added after real use, user decision)
+
+The items pane is split under two headers, each with a count. A header is hidden when its section is empty.
+- **`Outstanding (N)`**: pending and running items, **oldest first** (by `Created`), so the list is worked top to bottom.
+- **`Completed (N)`**: every other state (succeeded, failed, rejected, expired, modified), **newest first** by finish time:
+  the result's `RanAt` when there is a result; otherwise (expired) the item's `Expires`. Rows stay dimmed.
+- Every row starts with a timestamp, then the state glyph (●/…/✓/✗/⊘/⌛/!), then the description. Outstanding rows show the staged time
+  (`Created`); Completed rows show the finish time. Local time: `15:04` if it's today, otherwise `Jan 2 15:04`.
+- Headers can't be selected. Up and down move between items only, skipping headers, and a click on a header does nothing.
+- The "invalid items" pseudo-session is unchanged.
+- Because Outstanding is oldest-first, the oldest pending item is always the first item row. Session entry and auto-advance
+  (sections 3 and below) keep picking it by `Created`, so they land on that row.
+
 ### 3. Auto-advance
 
 After a **run finishes** or a **reject**, if the session still has pending items, select the
