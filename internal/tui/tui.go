@@ -608,7 +608,7 @@ func (m model) View() string {
 		}
 	}
 	body := strings.Split(lipgloss.NewStyle().Width(dw-2).Render(m.detail()), "\n")
-	body = body[min(m.scroll, max(0, len(body)-1)):]
+	body = body[m.bodyTop(len(body)):]
 
 	keys := []string{"↑↓ move", "tab/click pane"}
 	if m.focus > 0 && m.pending() {
