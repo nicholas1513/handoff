@@ -189,6 +189,9 @@ func TestBracesWhileArmedOnlyCancel(t *testing.T) {
 		t.Fatal("not armed")
 	}
 	m, _ = press(m, "}")
+	if m.armed || m.boxSel != "" {
+		t.Fatalf("} while armed: armed=%v sel=%q", m.armed, m.boxSel)
+	}
 	m, _ = press(m, " ")
 	m, _ = press(m, "]")
 	if m.armed || m.boxSel != "" || m.boxTop[promptBox] != 0 {
