@@ -272,3 +272,64 @@ func TestSpaceIgnoredAfterRunAdvance(t *testing.T) {
 		t.Fatalf("space right after a run's advance must be ignored (selected %q, armed %v)", m.item().Description, m.armed)
 	}
 }
+
+func rejectBoth(t *testing.T) (*queue.Queue, model) {
+	q, m := setup(t)
+	m, _ = press(m, "x")
+	m, _ = press(m, "x")
+	if m.pending() || m.item().Description != "first" {
+		t.Fatal("setup: both items should be rejected with the selection on first")
+	}
+	return q, m
+}
+
+func tickM(m model) model {
+	next, _ := m.Update(tickMsg(time.Now()))
+	return next.(model)
+}
+
+func TestNewItemArrivingPullsSelectionFromFinished(t *testing.T) {
+	q, m := rejectBoth(t)
+	clock := time.Now()
+	m.now = func() time.Time { return clock }
+	if _, err := q.Add(queue.Item{Description: "third", Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	m = tickM(m)
+	if m.item().Description != "third" {
+		t.Fatalf("selected %q, want third", m.item().Description)
+	}
+	m, _ = press(m, " ")
+	if m.armed {
+		t.Fatal("space right after the pull must be ignored")
+	}
+	clock = clock.Add(1100 * time.Millisecond)
+	m, _ = press(m, " ")
+	if !m.armed {
+		t.Fatal("space after the guard should arm")
+	}
+}
+
+func TestNewItemDoesNotPullFromPending(t *testing.T) {
+	q, m := setup(t) // "second" selected and pending
+	if _, err := q.Add(queue.Item{Description: "third", Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	m = tickM(m)
+	if m.item().Description != "second" {
+		t.Fatalf("selected %q, want second", m.item().Description)
+	}
+}
+
+func TestNewItemInOtherSessionDoesNotPull(t *testing.T) {
+	q, m := rejectBoth(t)
+	id, si := m.item().ID, m.si
+	q.WriteSession(queue.Session{SessionID: "other", Cwd: t.TempDir()})
+	if _, err := q.Add(queue.Item{Description: "elsewhere", Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: "other"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	m = tickM(m)
+	if m.item() == nil || m.item().ID != id || m.session().id != sid {
+		t.Fatalf("selection moved across sessions (si %d -> %d)", si, m.si)
+	}
+}
