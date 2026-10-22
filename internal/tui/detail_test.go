@@ -186,9 +186,19 @@ func TestIntegrityShowsAlgorithmAndPerFileHashes(t *testing.T) {
 	if len(fh) != 2 {
 		t.Fatalf("FileHashes = %+v", fh)
 	}
-	for _, w := range []string{"SHA-256 (combined", "item.json", fh[0].SHA256, "📎 body.json", fh[1].SHA256, "/body.json"} {
+	for _, w := range []string{"combined (internal; not comparable to shasum)", "item.json", fh[0].SHA256, "📎 body.json", fh[1].SHA256, "/body.json"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("%q missing from:\n%s", w, out)
 		}
+	}
+}
+
+func TestIntegrityOrderAndLabel(t *testing.T) {
+	_, m := setup(t)
+	m = withItem(t, m, queue.Item{Description: "x", Argv: []string{"/usr/bin/true"}}, nil, 400)
+	out := ansi.Strip(m.detail())
+	a, b := strings.Index(out, m.reviewed.FileHashes[0].SHA256), strings.Index(out, "combined (internal; not comparable to shasum)")
+	if a < 0 || b < 0 || a > b {
+		t.Fatalf("item.json hash at %d, combined label at %d:\n%s", a, b, out)
 	}
 }
