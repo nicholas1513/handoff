@@ -1,6 +1,9 @@
 package queue
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -191,5 +194,40 @@ func TestLoadRejectsStretchedExpiry(t *testing.T) {
 	os.WriteFile(filepath.Join(q.Root, "queue", it.ID, "item.json"), b, 0o600)
 	if _, err := q.Load(it.ID); err == nil {
 		t.Fatal("item with a year-long expiry accepted")
+	}
+}
+
+func TestSnapshotFileHashesMatchShasum(t *testing.T) {
+	q, body := newQueue(t)
+	it := addOne(t, q, body)
+	r, err := q.Snapshot(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.FileHashes) != 2 {
+		t.Fatalf("FileHashes = %+v, want item.json + 1 attachment", r.FileHashes)
+	}
+	sum := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
+	itemPath := filepath.Join(q.Root, "queue", it.ID, "item.json")
+	raw, _ := os.ReadFile(itemPath)
+	if f := r.FileHashes[0]; f.Name != "item.json" || f.Path != itemPath || f.SHA256 != sum(raw) {
+		t.Errorf("item.json entry = %+v", f)
+	}
+	f := r.FileHashes[1]
+	snapped, err := os.ReadFile(f.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Name != "body.json" || f.Path != filepath.Join(r.SnapDir, "body.json") || f.SHA256 != sum(snapped) {
+		t.Errorf("attachment entry = %+v", f)
+	}
+	// the combined hash scheme is persisted in result.json: length-prefixed item, then name and bytes
+	h := sha256.New()
+	put := func(b []byte) { binary.Write(h, binary.BigEndian, uint64(len(b))); h.Write(b) }
+	put(raw)
+	put([]byte("body.json"))
+	put(snapped)
+	if want := hex.EncodeToString(h.Sum(nil)); r.Hash != want {
+		t.Errorf("combined Hash = %s, want %s", r.Hash, want)
 	}
 }

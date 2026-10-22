@@ -68,7 +68,11 @@ type Reviewed struct {
 	Item    Item
 	Hash    string
 	SnapDir string
+	// FileHashes are plain SHA-256s of the exact bytes Hash covers, in order: item.json, then attachments.
+	FileHashes []FileHash
 }
+
+type FileHash struct{ Name, Path, SHA256 string }
 
 type Queue struct{ Root string }
 
@@ -179,15 +183,15 @@ func (q *Queue) List() (items []Item, invalid []string, err error) {
 }
 
 // read loads item.json and every attachment in one pass and hashes exactly those bytes.
-func (q *Queue) read(id string) (Item, map[string][]byte, string, error) {
+func (q *Queue) read(id string) (Item, map[string][]byte, string, []byte, error) {
 	dir := q.itemDir(id)
 	raw, err := os.ReadFile(filepath.Join(dir, "item.json"))
 	if err != nil {
-		return Item{}, nil, "", err
+		return Item{}, nil, "", nil, err
 	}
 	it, err := parse(raw)
 	if err != nil {
-		return Item{}, nil, "", err
+		return Item{}, nil, "", nil, err
 	}
 	h := sha256.New()
 	put := func(b []byte) { binary.Write(h, binary.BigEndian, uint64(len(b))); h.Write(b) }
@@ -196,13 +200,13 @@ func (q *Queue) read(id string) (Item, map[string][]byte, string, error) {
 	for _, name := range it.Files { // validated and sorted by Add
 		b, err := os.ReadFile(filepath.Join(dir, "files", name))
 		if err != nil {
-			return Item{}, nil, "", err
+			return Item{}, nil, "", nil, err
 		}
 		files[name] = b
 		put([]byte(name))
 		put(b)
 	}
-	return it, files, hex.EncodeToString(h.Sum(nil)), nil
+	return it, files, hex.EncodeToString(h.Sum(nil)), raw, nil
 }
 
 // Snapshot is called when the human opens an item. Attachments are written to snap/ from the
@@ -211,7 +215,7 @@ func (q *Queue) Snapshot(id string) (Reviewed, error) {
 	if !safeName.MatchString(id) {
 		return Reviewed{}, fmt.Errorf("bad item id %q", id)
 	}
-	it, files, hash, err := q.read(id)
+	it, files, hash, raw, err := q.read(id)
 	if err != nil {
 		return Reviewed{}, err
 	}
@@ -222,17 +226,21 @@ func (q *Queue) Snapshot(id string) (Reviewed, error) {
 	if err := os.MkdirAll(snap, 0o700); err != nil {
 		return Reviewed{}, err
 	}
-	for name, b := range files {
-		if err := os.WriteFile(filepath.Join(snap, name), b, 0o600); err != nil {
+	sum := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
+	fh := []FileHash{{"item.json", filepath.Join(q.itemDir(id), "item.json"), sum(raw)}}
+	for _, name := range it.Files {
+		p := filepath.Join(snap, name)
+		if err := os.WriteFile(p, files[name], 0o600); err != nil {
 			return Reviewed{}, err
 		}
+		fh = append(fh, FileHash{name, p, sum(files[name])})
 	}
-	return Reviewed{Item: it, Hash: hash, SnapDir: snap}, nil
+	return Reviewed{Item: it, Hash: hash, SnapDir: snap, FileHashes: fh}, nil
 }
 
 // Verify re-reads the live item and returns ErrModified if anything differs from the review.
 func (q *Queue) Verify(r Reviewed) error {
-	_, _, hash, err := q.read(r.Item.ID)
+	_, _, hash, _, err := q.read(r.Item.ID)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrModified, err)
 	}

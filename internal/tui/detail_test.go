@@ -175,3 +175,20 @@ func TestCwdHomeShortening(t *testing.T) {
 		t.Errorf("sibling of home was shortened:\n%s", out)
 	}
 }
+
+func TestIntegrityShowsAlgorithmAndPerFileHashes(t *testing.T) {
+	_, m := setup(t)
+	src := filepath.Join(t.TempDir(), "body.json")
+	os.WriteFile(src, []byte(`{"a":1}`), 0o600)
+	m = withItem(t, m, queue.Item{Description: "x", Argv: []string{"az", "rest", "--body", "@{file:body.json}"}}, map[string]string{"body.json": src}, 400)
+	out := ansi.Strip(m.detail())
+	fh := m.reviewed.FileHashes
+	if len(fh) != 2 {
+		t.Fatalf("FileHashes = %+v", fh)
+	}
+	for _, w := range []string{"SHA-256 (combined", "item.json", fh[0].SHA256, "📎 body.json", fh[1].SHA256, "/body.json"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("%q missing from:\n%s", w, out)
+		}
+	}
+}
