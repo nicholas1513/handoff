@@ -61,24 +61,25 @@ type runDone struct {
 }
 
 type model struct {
-	q         *queue.Queue
-	home      string
-	rows      []sessionRow
-	si, ii    int
-	focus     int // 0 sessions, 1 items, 2 detail
-	reviewed  *queue.Reviewed
-	openErr   error
-	changed   bool // live item differs from the reviewed snapshot
-	confirm   bool // mouse: Run clicked, waiting for Yes
-	armed     bool // keyboard: one space pressed, waiting for the second
-	running   bool
-	scroll    int
-	itemTop   int // first items-pane row drawn
-	outTop    int // first Result output line drawn
-	promptTop int // first prompt line drawn
-	status    string
-	w, h      int
-	titles    titleCache
+	q        *queue.Queue
+	home     string
+	rows     []sessionRow
+	si, ii   int
+	focus    int // 0 sessions, 1 items, 2 detail
+	reviewed *queue.Reviewed
+	openErr  error
+	changed  bool // live item differs from the reviewed snapshot
+	confirm  bool // mouse: Run clicked, waiting for Yes
+	armed    bool // keyboard: one space pressed, waiting for the second
+	running  bool
+	scroll   int
+	itemTop  int             // first items-pane row drawn
+	boxTop   map[string]int  // first line drawn per box id ("result", "prompt", "file:<name>"); copied on write
+	boxSel   string          // selected box; "" or an unframed id means the first framed box
+	seenEnd  map[string]bool // attachment boxes scrolled to their last line; copied on write
+	status   string
+	w, h     int
+	titles   titleCache
 
 	now        func() time.Time
 	advancedAt time.Time
@@ -205,10 +206,12 @@ func (m *model) open() {
 		return
 	}
 	r, err := m.q.Snapshot(it.ID)
-	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll, m.outTop, m.promptTop = &r, err, false, false, false, 0, 0, 0
+	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll = &r, err, false, false, false, 0
+	m.boxTop, m.boxSel, m.seenEnd = nil, "", nil
 	if err != nil {
 		m.reviewed = nil
 	}
+	m.markSeen()
 }
 
 func (m *model) move(d int) {
@@ -439,6 +442,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		m.clampScroll()
+		m.markSeen()
 	case tickMsg:
 		m.refresh()
 		return m, tick()
@@ -491,16 +495,16 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 	case "x":
 		m.reject()
 	case "[", "pgup", "]", "pgdown":
-		if m.focus == 2 {
-			d := m.outCap()
+		if b, ok := m.box(m.selBox()); m.focus == 2 && ok {
+			d := b.cap
 			if k == "[" || k == "pgup" {
 				d = -d
 			}
-			m.scrollOut(d)
+			m.scrollBox(b.id, d)
 		}
 	case "{", "}":
 		if m.focus == 2 {
-			m.scrollBox(promptBox, map[string]int{"{": -1, "}": 1}[k]*m.promptCap())
+			m.nextBox(map[string]int{"{": -1, "}": 1}[k])
 		}
 	case "o":
 		m.reviewed = nil
@@ -530,6 +534,7 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		if id, ok := m.boxAt(msg.Y); pane == 2 && ok {
 			m.scrollBox(id, 3*d)
+			m.boxSel = id
 		} else {
 			m.move(d)
 		}
@@ -613,6 +618,9 @@ func (m model) View() string {
 			header = warn.Render(confirmBtn)
 		} else if m.armed {
 			header = warn.Render(armedBtn)
+			if n := m.unviewedNames(); len(n) > 0 {
+				header = warn.Render(strings.Replace(armedBtn, "run", "run ("+strings.Join(n, ", ")+" not fully viewed)", 1))
+			}
 		}
 	}
 	body := m.detailLines()
@@ -622,11 +630,8 @@ func (m model) View() string {
 	if m.focus > 0 && m.pending() {
 		keys = append(keys, "space space run", "x reject")
 	}
-	if b, _ := m.box(resultBox); m.focus == 2 && b.framed {
-		keys = append(keys, "[ ] scroll output")
-	}
-	if b, _ := m.box(promptBox); m.focus == 2 && b.framed {
-		keys = append(keys, "{ } scroll prompt")
+	if m.focus == 2 && len(m.boxes()) > 0 {
+		keys = append(keys, "[ ] scroll · { } next box")
 	}
 	if m.changed {
 		keys = append(keys, "o re-open")
