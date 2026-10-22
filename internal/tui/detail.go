@@ -196,10 +196,10 @@ func (m *model) scrollOut(d int) {
 
 // inBox reports whether screen row y is one of the Result box's drawn lines (body line k is at buttonY+1+k-scroll).
 func (m model) inBox(y int) bool {
-	before, box, after := m.detailParts()
+	before, _, _ := m.detailParts()
 	wrap := m.wrapDetail
 	start := strings.Count(wrap(strings.TrimSuffix(before, "\n")), "\n") + 1
-	first := buttonY + 1 + start - m.bodyTop(strings.Count(wrap(before+box+after), "\n")+1)
+	first := buttonY + 1 + start - m.bodyTop(len(m.detailLines()))
 	return y > buttonY && y >= first && y < first+min(m.outCap(), len(m.resultLines())) && y <= max(5, m.h-3)
 }
 
@@ -213,11 +213,13 @@ func (m model) wrapDetail(s string) string {
 }
 
 // detailLines is the wrapped detail, one entry per drawn line. View, inBox and clampScroll share it.
-func (m model) detailLines() []string { return strings.Split(m.wrapDetail(m.detail()), "\n") }
+func (m model) detailLines() []string {
+	return strings.Split(m.wrapDetail(strings.TrimSuffix(m.detail(), "\n")), "\n")
+}
 
-// clampScroll keeps m.scroll within the detail: the pane shows h-1 body lines below the button row.
+// clampScroll keeps m.scroll within the detail: pane() keeps h lines, less the title and the button row.
 func (m *model) clampScroll() {
-	m.scroll = max(0, min(m.scroll, len(m.detailLines())-(max(5, m.h-3)-1)))
+	m.scroll = max(0, min(m.scroll, len(m.detailLines())-(max(5, m.h-3)-2)))
 }
 
 // detailParts is the detail text in three runs: everything before the Result box (for a finished item that ends with the
