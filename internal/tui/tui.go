@@ -149,6 +149,9 @@ func (m *model) refresh() {
 		m.rows = append(m.rows, sessionRow{id: "invalid", invalid: invalid})
 	}
 	m.si, m.ii = 0, 0
+	if keepS == "" {
+		m.enterSession(0)
+	}
 	for i, r := range m.rows {
 		if r.id == keepS {
 			m.si = i
@@ -173,6 +176,16 @@ func (m *model) refresh() {
 	m.open()
 }
 
+// enterSession selects the row's oldest pending item (guarding space like an advance), else the newest.
+func (m *model) enterSession(si int) {
+	m.si, m.ii = si, 0
+	if s := m.session(); s != nil {
+		if best, ok := m.oldestPending(s); ok {
+			m.ii, m.advancedAt = best, m.now()
+		}
+	}
+}
+
 // open snapshots the selected item, unless it is already the one under review.
 func (m *model) open() {
 	it := m.item()
@@ -194,7 +207,7 @@ func (m *model) open() {
 func (m *model) move(d int) {
 	switch m.focus {
 	case 0:
-		m.si, m.ii = clamp(m.si+d, len(m.rows)), 0
+		m.enterSession(clamp(m.si+d, len(m.rows)))
 	case 1:
 		if s := m.session(); s != nil {
 			m.ii = clamp(m.ii+d, max(len(s.items), len(s.invalid)))
@@ -377,7 +390,7 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.focus = pane
 		row := msg.Y - listTop
 		if pane == 0 && row < len(m.rows) {
-			m.si, m.ii = row, 0
+			m.enterSession(row)
 		} else if s := m.session(); pane == 1 && s != nil && row < max(len(s.items), len(s.invalid)) {
 			m.ii = row
 		}
