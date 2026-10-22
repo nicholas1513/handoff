@@ -442,7 +442,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		m.clampScroll()
-		m.markSeen()
 	case tickMsg:
 		m.refresh()
 		return m, tick()
@@ -501,10 +500,12 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 				d = -d
 			}
 			m.scrollBox(b.id, d)
+			m.reveal(b.id)
 		}
 	case "{", "}":
 		if m.focus == 2 {
 			m.nextBox(map[string]int{"{": -1, "}": 1}[k])
+			m.reveal(m.selBox())
 		}
 	case "o":
 		m.reviewed = nil
@@ -541,6 +542,9 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft:
 	case pane == 2 && msg.Y == buttonY:
 		x := msg.X - sw - iw
+		if m.confirm {
+			x -= lipgloss.Width(m.warnPrefix()) // the confirm row is drawn after it, so its buttons shift with it
+		}
 		switch {
 		case m.confirm && x >= cancelX && x < cancelX+10:
 			m.confirm = false
@@ -615,12 +619,9 @@ func (m model) View() string {
 	if m.pending() {
 		header = runBtn
 		if m.confirm {
-			header = warn.Render(confirmBtn)
+			header = warn.Render(m.warnPrefix() + confirmBtn)
 		} else if m.armed {
-			header = warn.Render(armedBtn)
-			if n := m.unviewedNames(); len(n) > 0 {
-				header = warn.Render(strings.Replace(armedBtn, "run", "run ("+strings.Join(n, ", ")+" not fully viewed)", 1))
-			}
+			header = warn.Render(m.warnPrefix() + armedBtn)
 		}
 	}
 	body := m.detailLines()

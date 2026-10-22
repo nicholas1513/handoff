@@ -215,20 +215,20 @@ func (m model) render(b box, sel bool) string {
 	return m.frame(b.lines[b.top:b.top+b.cap], b.top, len(b.lines), sel) + "\n"
 }
 
-// boxes is the framed boxes' first content row in the wrapped detail, and their ids and caps.
-func (m model) boxes() (out []struct {
-	id         string
-	first, cap int
-}) {
+// placed is a framed box and its first content row in the wrapped detail.
+type placed struct {
+	box
+	first int
+}
+
+// boxes is the framed boxes in display order, with where each sits in the wrapped detail.
+func (m model) boxes() (out []placed) {
 	n := 0
 	for _, s := range m.detailSegs() {
 		if s.box == nil {
 			n += strings.Count(m.wrapDetail(strings.TrimSuffix(s.text, "\n")), "\n") + 1
 		} else if s.box.framed {
-			out = append(out, struct {
-				id         string
-				first, cap int
-			}{s.box.id, n + 1, s.box.cap})
+			out = append(out, placed{*s.box, n + 1})
 			n += s.box.cap + 2
 		} else {
 			n += max(1, len(s.box.lines))
@@ -276,13 +276,45 @@ func (m model) unviewedNames() (out []string) {
 	return
 }
 
-// markSeen records each attachment box whose last line is visible (or that isn't framed at all).
+// markSeen records each framed attachment box whose last line is drawn on screen: the box is scrolled to its end and
+// that row is inside the visible pane. Being unframed never counts.
 func (m *model) markSeen() {
-	for _, s := range m.detailSegs() {
-		if b := s.box; b != nil && strings.HasPrefix(b.id, "file:") && !m.seenEnd[b.id] && (!b.framed || b.top+b.cap >= len(b.lines)) {
+	if m.reviewed == nil || len(m.reviewed.Item.Files) == 0 {
+		return // no attachments: skip rebuilding the detail on every pane move
+	}
+	top := -1
+	for _, b := range m.boxes() {
+		if !strings.HasPrefix(b.id, "file:") || m.seenEnd[b.id] || b.top+b.cap < len(b.lines) {
+			continue
+		}
+		if top < 0 {
+			top = m.bodyTop(len(m.detailLines()))
+		}
+		if last := b.first + b.cap - 1; last >= top && last < top+m.bodyRows() {
 			m.seenEnd = with(m.seenEnd, b.id, true)
 		}
 	}
+}
+
+// reveal scrolls the pane so the box with that id, borders included, is in view (its top when it can't all fit).
+func (m *model) reveal(id string) {
+	for _, b := range m.boxes() {
+		if b.id == id {
+			if hi := b.first + b.cap + 1; hi > m.scroll+m.bodyRows() {
+				m.scroll = hi - m.bodyRows()
+			}
+			m.scroll = min(m.scroll, b.first-1)
+		}
+	}
+	m.clampScroll()
+}
+
+// warnPrefix leads the armed and confirm rows when attachments aren't viewed to the end; first, so truncation keeps it.
+func (m model) warnPrefix() string {
+	if n := m.unviewedNames(); len(n) > 0 {
+		return "⚠ not fully viewed: " + strings.Join(n, ", ") + " · "
+	}
+	return ""
 }
 
 // with returns a copy of mp with k set: models are values, so a shared map would leak state between copies.
@@ -392,9 +424,13 @@ func (m model) detailLines() []string {
 	return strings.Split(m.wrapDetail(strings.TrimSuffix(m.detail(), "\n")), "\n")
 }
 
-// clampScroll keeps m.scroll within the detail: pane() keeps h lines, less the title and the button row.
+// bodyRows is how many detail lines the pane draws: pane() keeps h lines, less the title and the button row.
+func (m model) bodyRows() int { return max(5, m.h-3) - 2 }
+
+// clampScroll keeps m.scroll within the detail, then records what the pane now shows.
 func (m *model) clampScroll() {
-	m.scroll = max(0, min(m.scroll, len(m.detailLines())-(max(5, m.h-3)-2)))
+	m.scroll = max(0, min(m.scroll, len(m.detailLines())-m.bodyRows()))
+	m.markSeen()
 }
 
 // detailSegs is the detail in order: text runs and the Result, prompt and attachment boxes.
