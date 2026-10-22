@@ -161,8 +161,8 @@ func chip(text, color string) string {
 }
 
 func (m model) detail() string {
-	head, tail := m.detailParts()
-	return head + tail
+	before, box, after := m.detailParts()
+	return before + box + after
 }
 
 // outCap is the Result box height: 40% of the window, at least 3 lines.
@@ -196,33 +196,48 @@ func (m *model) scrollOut(d int) {
 
 // inBox reports whether screen row y is one of the Result box's drawn lines (body line k is at buttonY+1+k-scroll).
 func (m model) inBox(y int) bool {
-	head, tail := m.detailParts()
-	_, _, dw := columns(m.w)
-	wrap := lipgloss.NewStyle().Width(dw - 2).Render
-	start := strings.Count(wrap(strings.TrimSuffix(head, "\n")), "\n") + 1
-	first := buttonY + 1 + start - m.bodyTop(strings.Count(wrap(head+tail), "\n")+1)
+	before, box, after := m.detailParts()
+	wrap := m.wrapDetail
+	start := strings.Count(wrap(strings.TrimSuffix(before, "\n")), "\n") + 1
+	first := buttonY + 1 + start - m.bodyTop(strings.Count(wrap(before+box+after), "\n")+1)
 	return y > buttonY && y >= first && y < first+min(m.outCap(), len(m.resultLines())) && y <= max(5, m.h-3)
 }
 
 // bodyTop is the first detail line drawn: m.scroll, kept inside the n wrapped lines. View and inBox share it.
 func (m model) bodyTop(n int) int { return min(m.scroll, max(0, n-1)) }
 
-// detailParts is the detail text split at the Result box: everything before it, then the box (and its footer).
-func (m model) detailParts() (head, tail string) {
+// wrapDetail wraps s to the detail pane's text width.
+func (m model) wrapDetail(s string) string {
+	_, _, dw := columns(m.w)
+	return lipgloss.NewStyle().Width(dw - 2).Render(s)
+}
+
+// detailLines is the wrapped detail, one entry per drawn line. View, inBox and clampScroll share it.
+func (m model) detailLines() []string { return strings.Split(m.wrapDetail(m.detail()), "\n") }
+
+// clampScroll keeps m.scroll within the detail: the pane shows h-1 body lines below the button row.
+func (m *model) clampScroll() {
+	m.scroll = max(0, min(m.scroll, len(m.detailLines())-(max(5, m.h-3)-1)))
+}
+
+// detailParts is the detail text in three runs: everything before the Result box (for a finished item that ends with the
+// Result heading and exit line), the box and its footer, then the rest (Command onward). Pending: box is empty.
+func (m model) detailParts() (before, box, after string) {
 	s := m.session()
 	if s != nil && s.invalid != nil && m.ii < len(s.invalid) {
 		_, err := m.q.Load(s.invalid[m.ii])
-		return warn.Render("This item failed to load and can't be run.") + "\n\n" + sanitize(fmt.Sprint(err)), ""
+		return warn.Render("This item failed to load and can't be run.") + "\n\n" + sanitize(fmt.Sprint(err)), "", ""
 	}
 	if m.openErr != nil {
-		return warn.Render("Could not open item: ") + sanitize(m.openErr.Error()), ""
+		return warn.Render("Could not open item: ") + sanitize(m.openErr.Error()), "", ""
 	}
 	if m.reviewed == nil {
-		return dim.Render("No items."), ""
+		return dim.Render("No items."), "", ""
 	}
 	it := m.reviewed.Item
-	var b strings.Builder
-	p := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+	var b, a strings.Builder
+	w := &b
+	p := func(format string, args ...any) { fmt.Fprintf(w, format+"\n", args...) }
 
 	state := m.q.State(it, time.Now())
 	chips := []string{chip(strings.ToUpper(state), resColor(state))}
@@ -265,6 +280,21 @@ func (m model) detailParts() (head, tail string) {
 	for _, pr := range settings.Problems {
 		p("%s", warn.Render("settings problem: "+sanitize(pr)))
 	}
+
+	if res, err := m.q.ReadResult(it); err == nil {
+		p("\n%s", heading("Result"))
+		p("%s exit %d at %s", chip(strings.ToUpper(res.State), resColor(res.State)), res.ExitCode, res.RanAt.Format(time.Kitchen))
+		out := m.resultLines()
+		if n := m.outCap(); len(out) > n {
+			top := max(0, min(m.outTop, len(out)-n))
+			out = append(out[top:top+n:top+n], dim.Render(fmt.Sprintf("lines %d–%d of %d", top+1, top+n, len(m.resultLines()))))
+		}
+		box = strings.Join(out, "\n") + "\n"
+	} else if !errors.Is(err, os.ErrNotExist) {
+		p("\n%s", heading("Result"))
+		p("%s", warn.Render(sanitize(err.Error())))
+	}
+	w = &a
 
 	sizes := map[string]int{}
 	for _, name := range it.Files {
@@ -324,20 +354,7 @@ func (m model) detailParts() (head, tail string) {
 	}
 	p("%s\n%s", dim.Render("combined (internal; not comparable to shasum)"), dim.Render(m.reviewed.Hash))
 
-	if res, err := m.q.ReadResult(it); err == nil {
-		p("\n%s", heading("Result"))
-		p("%s exit %d at %s", chip(strings.ToUpper(res.State), resColor(res.State)), res.ExitCode, res.RanAt.Format(time.Kitchen))
-		out := m.resultLines()
-		if n := m.outCap(); len(out) > n {
-			top := max(0, min(m.outTop, len(out)-n))
-			out = append(out[top:top+n:top+n], dim.Render(fmt.Sprintf("lines %d–%d of %d", top+1, top+n, len(m.resultLines()))))
-		}
-		tail = strings.Join(out, "\n") + "\n"
-	} else if !errors.Is(err, os.ErrNotExist) {
-		p("\n%s", heading("Result"))
-		p("%s", warn.Render(sanitize(err.Error())))
-	}
-	return b.String(), tail
+	return b.String(), box, a.String()
 }
 
 // resColor: pending yellow, succeeded green, anything else (failed, rejected) red.
