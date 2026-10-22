@@ -146,6 +146,11 @@ The items pane is split under two headers, each with a count. A header is hidden
   `lines A–B of T` line when the output is longer. With the detail pane focused, `[` / `]` and PgUp / PgDn scroll that box by a page;
   ↑↓ still scroll the whole detail pane, and the mouse wheel over the box scrolls the box. Only result output is capped: the command,
   the description, the warnings and the attachments always show in full. The box scroll resets to the top on a different item.
+- **Revised after real use (user decision):** for an item that has a result, the Result section (its heading, the exit line, the
+  capped box and the footer) comes right after the chips, the description and the warnings, ahead of Command / Why / attachments /
+  Integrity. Otherwise the box sat below the visible pane and the cap looked like it did nothing. Pending items keep the old order.
+- **Whole-pane scroll is bounded:** ↑↓ on the detail pane stop when the last line reaches the pane's bottom, so content that fits
+  doesn't scroll at all.
 
 ### 3. Auto-advance
 
