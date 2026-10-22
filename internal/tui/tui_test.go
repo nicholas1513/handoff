@@ -93,3 +93,70 @@ func TestRejectAndInvalid(t *testing.T) {
 		t.Fatal("unsafe id accepted")
 	}
 }
+
+func press(m model, k string) (model, tea.Cmd) {
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+	if k == " " {
+		msg = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}
+	}
+	next, cmd := m.Update(msg)
+	return next.(model), cmd
+}
+
+func TestSpaceSpaceRuns(t *testing.T) {
+	q, m := setup(t)
+	m, cmd := press(m, " ")
+	if !m.armed || cmd != nil || q.State(*m.item(), time.Now()) != queue.Pending {
+		t.Fatal("one space must only arm")
+	}
+	v := m.View()
+	if !strings.Contains(v, "space again to run") || strings.Contains(v, "Yes, run") {
+		t.Fatal("armed prompt not shown, or a Yes button is")
+	}
+	m, cmd = press(m, " ")
+	if cmd == nil {
+		t.Fatal("second space did not start the run")
+	}
+}
+
+func TestArmedOtherKeyCancelsAndIsNotActedOn(t *testing.T) {
+	q, m := setup(t)
+	m, _ = press(m, " ")
+	m, _ = press(m, "x")
+	if m.armed || q.State(*m.item(), time.Now()) != queue.Pending {
+		t.Fatal("x while armed must cancel, not reject")
+	}
+}
+
+func TestClickAtYesWhileKeyArmedDoesNotRun(t *testing.T) {
+	_, m := setup(t)
+	sw, iw, _ := columns(m.w)
+	m, _ = press(m, " ")
+	m, cmd := click(m, sw+iw+yesX+1, buttonY)
+	if cmd != nil || m.armed {
+		t.Fatal("a click must cancel a key arm, never run")
+	}
+}
+
+func TestSpaceCancelsMouseConfirm(t *testing.T) {
+	_, m := setup(t)
+	sw, iw, _ := columns(m.w)
+	m, _ = click(m, sw+iw+runX+1, buttonY)
+	if !m.confirm {
+		t.Fatal("run click should enter confirm")
+	}
+	m, cmd := press(m, " ")
+	if cmd != nil || m.confirm || m.armed {
+		t.Fatal("space must cancel the mouse confirm, never run")
+	}
+}
+
+func TestKeysDroppedWhileRunning(t *testing.T) {
+	_, m := setup(t)
+	m.running = true
+	m, _ = press(m, " ")
+	m, cmd := press(m, " ")
+	if m.armed || cmd != nil {
+		t.Fatal("keys must be dropped while running")
+	}
+}

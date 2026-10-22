@@ -33,6 +33,7 @@ const (
 const (
 	runBtn     = "[ Run ]  [ Reject ]"
 	confirmBtn = "Run this?  [ Cancel ]  [ Yes, run ]"
+	armedBtn   = "space again to run · any other key cancels"
 )
 
 func columns(w int) (sessions, items, detail int) {
@@ -63,7 +64,8 @@ type model struct {
 	reviewed *queue.Reviewed
 	openErr  error
 	changed  bool // live item differs from the reviewed snapshot
-	confirm  bool
+	confirm  bool // mouse: Run clicked, waiting for Yes
+	armed    bool // keyboard: one space pressed, waiting for the second
 	running  bool
 	scroll   int
 	status   string
@@ -164,7 +166,7 @@ func (m *model) open() {
 		return
 	}
 	r, err := m.q.Snapshot(it.ID)
-	m.reviewed, m.openErr, m.changed, m.confirm, m.scroll = &r, err, false, false, 0
+	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll = &r, err, false, false, false, 0
 	if err != nil {
 		m.reviewed = nil
 	}
@@ -196,10 +198,10 @@ func (m *model) startRun() tea.Cmd {
 	}
 	if m.changed {
 		m.status = "item changed after you opened it: press o to review it again"
-		m.confirm = false
+		m.confirm, m.armed = false, false
 		return nil
 	}
-	m.confirm, m.running, m.status = false, true, "running…"
+	m.confirm, m.armed, m.running, m.status = false, false, true, "running…"
 	q, r := m.q, *m.reviewed
 	return func() tea.Msg {
 		_, err := runner.Run(context.Background(), q, r, time.Now())
@@ -216,7 +218,7 @@ func (m *model) reject() {
 	if err == nil {
 		err = m.q.WriteResult(it, queue.Result{State: queue.Rejected, ExitCode: -1, RanAt: time.Now(), SHA256Reviewed: m.reviewed.Hash})
 	}
-	m.confirm, m.status = false, "rejected"
+	m.confirm, m.armed, m.status = false, false, "rejected"
 	if err != nil {
 		m.status = "reject: " + err.Error()
 	}
@@ -243,11 +245,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// arm is the only way a key starts a run; a time guard belongs here.
+func (m *model) arm() { m.armed = m.pending() }
+
 func (m model) key(k string) (tea.Model, tea.Cmd) {
-	if m.confirm {
-		if k == "y" {
+	if m.running && k != "q" && k != "ctrl+c" {
+		return m, nil
+	}
+	if m.armed {
+		if k == " " {
 			return m, m.startRun()
 		}
+		m.armed = false // the cancelling key is not acted on
+		return m, nil
+	}
+	if m.confirm { // mouse confirm: any key cancels, space included
 		m.confirm = false
 		return m, nil
 	}
@@ -262,8 +274,8 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		m.move(1)
 	case "up", "k":
 		m.move(-1)
-	case "r":
-		m.confirm = m.pending()
+	case " ", "r":
+		m.arm()
 	case "x":
 		m.reject()
 	case "o":
@@ -280,6 +292,10 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		pane = 0
 	} else if msg.X < sw+iw {
 		pane = 1
+	}
+	if m.armed && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		m.armed = false // a click only cancels the arm; it is not acted on
+		return m, nil
 	}
 	switch {
 	case msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown:
@@ -361,12 +377,14 @@ func (m model) View() string {
 		header = runBtn
 		if m.confirm {
 			header = warn.Render(confirmBtn)
+		} else if m.armed {
+			header = warn.Render(armedBtn)
 		}
 	}
 	body := strings.Split(lipgloss.NewStyle().Width(dw-2).Render(m.detail()), "\n")
 	body = body[min(m.scroll, max(0, len(body)-1)):]
 
-	status := dim.Render("↑↓ move · tab/click pane · r run · x reject · o re-open · q quit")
+	status := dim.Render("↑↓ move · tab/click pane · space space run · x reject · o re-open · q quit")
 	if m.status != "" {
 		status = m.status + dim.Render("  ·  q quit")
 	}
