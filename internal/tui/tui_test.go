@@ -610,3 +610,12 @@ func TestSectionHeadersShareOneStyle(t *testing.T) {
 		t.Fatalf("section color %v", section.GetForeground())
 	}
 }
+
+func TestKeyHelpStaysAfterAction(t *testing.T) {
+	_, m := setup(t)
+	m, _ = press(m, "x")
+	v := m.View()
+	if !strings.Contains(v, "rejected") || !strings.Contains(v, "space space run") || !strings.Contains(v, "x reject") {
+		t.Fatalf("status line lost the key help after an action:\n%s", v[strings.LastIndex(v, "\n")+1:])
+	}
+}
