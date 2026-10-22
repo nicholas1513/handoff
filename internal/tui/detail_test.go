@@ -23,7 +23,7 @@ func withItem(t *testing.T, m model, it queue.Item, files map[string]string, w i
 		t.Fatal(err)
 	}
 	nm := newModel(m.q, m.home)
-	nm.ii = 0 // startup now picks the oldest pending; these tests want the newest
+	nm.ii = len(nm.session().items) - 1 // items list oldest first, so the newest is last
 	nm.open()
 	next, _ := nm.Update(tea.WindowSizeMsg{Width: w, Height: 30})
 	return next.(model)

@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/nicholas1513/handoff/internal/queue"
@@ -42,7 +43,7 @@ func setup(t *testing.T) (*queue.Queue, model) {
 		}
 	}
 	m := newModel(q, t.TempDir())
-	m.ii, m.advancedAt = 0, time.Time{} // startup now picks the oldest pending; these tests start on the newest, unguarded
+	m.ii, m.advancedAt = 1, time.Time{} // items list oldest first, so "second" (the newest) is index 1; startup picks the oldest, these tests start unguarded
 	m.open()
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return q, next.(model)
@@ -208,7 +209,7 @@ func TestNoAdvanceIfUserMovedAway(t *testing.T) {
 	_, m := setup(t)
 	ran := m.item().ID
 	m.focus = 1
-	m.move(1) // user moves to "first" while the run is in flight
+	m.move(-1) // user moves to "first" while the run is in flight
 	m.advance(ran)
 	if m.item().Description != "first" || !m.advancedAt.IsZero() {
 		t.Fatal("advance must not fire when the selection moved off the item that ran")
@@ -347,7 +348,7 @@ func TestFinishedItemsDimmed(t *testing.T) {
 	s := m.session()
 	var rej, pend string
 	for _, it := range s.items {
-		row := itemRow(it, m.q.State(it, time.Now()))
+		row := itemRow(it, m.q.State(it, time.Now()), "12:00")
 		if it.Description == "second" {
 			rej = row
 		} else {
@@ -364,7 +365,7 @@ func TestStayOnFinishedWhileOthersPending(t *testing.T) {
 	_, m := setup(t)
 	m, _ = press(m, "x") // rejects "second", advances to "first"
 	m.focus = 1
-	m.move(-1)
+	m.move(1)
 	if m.item().Description != "second" {
 		t.Fatalf("setup: selected %q, want second", m.item().Description)
 	}
@@ -434,7 +435,7 @@ func TestSwitchSessionNoPendingSelectsNewest(t *testing.T) {
 	_, m := twoSessions(t, true)
 	m.si, m.ii, m.focus = 0, 0, 0
 	m, _ = press(m, "j")
-	if m.session().id != sid || m.ii != 0 || m.item().Description != "a3" {
+	if m.session().id != sid || m.ii != 0 || m.item().Description != "a3" || !m.advancedAt.IsZero() {
 		t.Fatalf("no pending: want newest a3 at 0, got %d %q", m.ii, m.item().Description)
 	}
 }
@@ -464,7 +465,94 @@ func TestStartupSelectsOldestPending(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	if m := newModel(q, t.TempDir()); m.item().Description != "a1" {
-		t.Fatalf("startup: want oldest pending a1, got %q", m.item().Description)
+	m := newModel(q, t.TempDir())
+	if m.item().Description != "a1" || m.advancedAt.IsZero() {
+		t.Fatalf("startup: want oldest pending a1 with advancedAt set, got %q", m.item().Description)
+	}
+}
+
+// sections: p1, p2 pending (p1 older); f1 finished at base+1m, f2 at base+2m.
+func sections(t *testing.T, finished bool) (*queue.Queue, model, time.Time) {
+	t.Helper()
+	q := &queue.Queue{Root: t.TempDir()}
+	base := time.Date(2020, 1, 2, 9, 0, 0, 0, time.Local)
+	for i, d := range []string{"p1", "f1", "p2", "f2"} {
+		it, err := q.Add(queue.Item{Description: d, Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: sid}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d[0] == 'f' {
+			if !finished {
+				continue
+			}
+			q.Claim(it)
+			q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: base.Add(time.Duration(i) * time.Minute)})
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	m := newModel(q, t.TempDir())
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return q, next.(model), base
+}
+
+func paneRows(m model) []string {
+	rows, _ := m.itemPane(m.session(), m.now())
+	for i := range rows {
+		rows[i] = ansi.Strip(rows[i])
+	}
+	return rows
+}
+
+func TestItemsSectionsOrder(t *testing.T) {
+	_, m, _ := sections(t, true)
+	want := []string{"Outstanding (2)", "p1", "p2", "Completed (2)", "f2", "f1"}
+	rows := paneRows(m)
+	if len(rows) != len(want) {
+		t.Fatalf("rows %q", rows)
+	}
+	for i, w := range want {
+		if !strings.HasSuffix(rows[i], w) {
+			t.Fatalf("row %d = %q, want ...%q (all %q)", i, rows[i], w, rows)
+		}
+	}
+}
+
+func TestItemsHeaderHiddenWhenEmpty(t *testing.T) {
+	_, m, _ := sections(t, false)
+	for _, r := range paneRows(m) {
+		if strings.Contains(r, "Completed") {
+			t.Fatalf("Completed header with no completed items: %q", r)
+		}
+	}
+}
+
+func TestItemsTimestamps(t *testing.T) {
+	_, m, _ := sections(t, true)
+	m.now = func() time.Time { return time.Date(2020, 1, 3, 10, 0, 0, 0, time.Local) }
+	rows := paneRows(m)
+	if !strings.HasPrefix(rows[4], "Jan 2 09:03  ✓ f2") || !strings.HasPrefix(rows[5], "Jan 2 09:01  ✓ f1") {
+		t.Fatalf("completed stamps: %q", rows)
+	}
+	c := m.session().items[0].Created
+	m.now = func() time.Time { return c }
+	if rows := paneRows(m); !strings.HasPrefix(rows[1], c.Local().Format("15:04")+"  ● p1") {
+		t.Fatalf("today stamp: %q", rows[1])
+	}
+}
+
+func TestClickMapsPastHeaders(t *testing.T) {
+	_, m, _ := sections(t, true)
+	sw, _, _ := columns(m.w)
+	m, _ = click(m, sw+3, listTop+2)
+	if m.item().Description != "p2" {
+		t.Fatalf("click selected %q, want p2", m.item().Description)
+	}
+	m, _ = click(m, sw+3, listTop+3) // the Completed header
+	if m.item().Description != "p2" {
+		t.Fatalf("header click moved the selection to %q", m.item().Description)
+	}
+	m, _ = click(m, sw+3, listTop+4)
+	if m.item().Description != "f2" {
+		t.Fatalf("click selected %q, want f2", m.item().Description)
 	}
 }

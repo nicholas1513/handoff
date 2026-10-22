@@ -47,7 +47,7 @@ func columns(w int) (sessions, items, detail int) {
 type sessionRow struct {
 	id      string
 	sess    *queue.Session // nil: no hook record, so unverified
-	items   []queue.Item   // newest first
+	items   []queue.Item   // display order: outstanding oldest first, then completed newest-finished first
 	invalid []string       // only on the "invalid" pseudo-session
 }
 
@@ -142,6 +142,7 @@ func (m *model) refresh() {
 	}
 	m.rows = m.rows[:0]
 	for _, r := range rows {
+		m.sortItems(r.items)
 		m.rows = append(m.rows, *r)
 	}
 	if len(invalid) > 0 {
@@ -218,13 +219,86 @@ func (m *model) move(d int) {
 	m.open()
 }
 
+func outstanding(st string) bool { return st == queue.Pending || st == queue.Running }
+
+// finish is when a completed item ended: the result's RanAt, else (expired) its Expires.
+func (m *model) finish(it queue.Item) time.Time {
+	if r, err := m.q.ReadResult(it); err == nil {
+		return r.RanAt
+	}
+	return it.Expires
+}
+
+// sortItems: outstanding by Created ascending, then completed by finish time descending; ties by ID.
+func (m *model) sortItems(items []queue.Item) {
+	now := time.Now()
+	out := map[string]bool{}
+	at := map[string]time.Time{}
+	for _, it := range items {
+		if out[it.ID] = outstanding(m.q.State(it, now)); out[it.ID] {
+			at[it.ID] = it.Created
+		} else {
+			at[it.ID] = m.finish(it)
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		switch {
+		case out[a.ID] != out[b.ID]:
+			return out[a.ID]
+		case !at[a.ID].Equal(at[b.ID]):
+			return at[a.ID].Before(at[b.ID]) == out[a.ID]
+		}
+		return a.ID < b.ID
+	})
+}
+
+// stamp is local time: 15:04 for today, else Jan 2 15:04.
+func stamp(t, now time.Time) string {
+	t, now = t.Local(), now.Local()
+	if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
+		return t.Format("15:04")
+	}
+	return t.Format("Jan 2 15:04")
+}
+
 // itemRow dims finished items (any state but pending/running).
-func itemRow(it queue.Item, st string) string {
-	row := glyph(st) + " " + oneLine(it.Description)
-	if st != queue.Pending && st != queue.Running {
+func itemRow(it queue.Item, st, ts string) string {
+	row := ts + "  " + glyph(st) + " " + oneLine(it.Description)
+	if !outstanding(st) {
 		return dim.Render(row)
 	}
 	return row
+}
+
+// itemPane is the items pane's rows plus, per row, the index of the item it shows (-1: a header).
+// For the invalid pseudo-session the index is into s.invalid. View and the mouse both use this.
+func (m *model) itemPane(s *sessionRow, now time.Time) (rows []string, idx []int) {
+	add := func(r string, i int) { rows, idx = append(rows, r), append(idx, i) }
+	states := make([]string, len(s.items))
+	n := 0
+	for i, it := range s.items {
+		if states[i] = m.q.State(it, now); outstanding(states[i]) {
+			n++
+		}
+	}
+	for i, it := range s.items {
+		if i == 0 && n > 0 {
+			add(head.Render(fmt.Sprintf("Outstanding (%d)", n)), -1)
+		}
+		if i == n && n < len(s.items) {
+			add(head.Render(fmt.Sprintf("Completed (%d)", len(s.items)-n)), -1)
+		}
+		ts := it.Created
+		if !outstanding(states[i]) {
+			ts = m.finish(it)
+		}
+		add(itemRow(it, states[i], stamp(ts, now)), i)
+	}
+	for i, id := range s.invalid {
+		add("⚠ "+id, i)
+	}
+	return rows, idx
 }
 
 func clamp(i, n int) int { return max(0, min(i, n-1)) }
@@ -391,8 +465,10 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		row := msg.Y - listTop
 		if pane == 0 && row < len(m.rows) {
 			m.enterSession(row)
-		} else if s := m.session(); pane == 1 && s != nil && row < max(len(s.items), len(s.invalid)) {
-			m.ii = row
+		} else if s := m.session(); pane == 1 && s != nil {
+			if _, idx := m.itemPane(s, m.now()); row < len(idx) && idx[row] >= 0 {
+				m.ii = idx[row]
+			}
 		}
 		m.open()
 	default:
@@ -409,6 +485,7 @@ var (
 	ok      = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	dim     = lipgloss.NewStyle().Faint(true)
 	bold    = lipgloss.NewStyle().Bold(true)
+	head    = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 )
 
 func (m model) View() string {
@@ -430,12 +507,14 @@ func (m model) View() string {
 		srows = append(srows, sessionLabel(r, title, pending, now))
 	}
 	var irows []string
+	isel := -1
 	if s := m.session(); s != nil {
-		for _, it := range s.items {
-			irows = append(irows, itemRow(it, m.q.State(it, time.Now())))
-		}
-		for _, id := range s.invalid {
-			irows = append(irows, "⚠ "+id)
+		var idx []int
+		irows, idx = m.itemPane(s, m.now())
+		for j, i := range idx {
+			if i == m.ii {
+				isel = j
+			}
 		}
 	}
 
@@ -458,7 +537,7 @@ func (m model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Top,
 			m.pane(0, sw, h, "Sessions", srows, m.si),
-			m.pane(1, iw, h, "Items", irows, m.ii),
+			m.pane(1, iw, h, "Items", irows, isel),
 			m.pane(2, dw, h, "Detail", append([]string{header}, body...), -1),
 		),
 		status,
@@ -497,7 +576,13 @@ func sessionLabel(r sessionRow, title string, pending int, now time.Time) string
 	}
 	parts := []string{title, filepath.Base(r.sess.Cwd)}
 	if len(r.items) > 0 {
-		parts = append(parts, age(now.Sub(r.items[0].Created)))
+		newest := r.items[0].Created
+		for _, it := range r.items {
+			if it.Created.After(newest) {
+				newest = it.Created
+			}
+		}
+		parts = append(parts, age(now.Sub(newest)))
 	}
 	label := strings.Join(parts, " · ")
 	if pending > 0 {
