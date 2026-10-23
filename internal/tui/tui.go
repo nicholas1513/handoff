@@ -28,12 +28,20 @@ const (
 	rejectX = 10 // "[ Reject ]"
 	cancelX = 12 // "Run this?  [ Cancel ]"
 	yesX    = 24 // "[ Yes, run ]"
+
+	cancelRunX = 1  // "[ Cancel run ]"
+	noX        = 18 // "Cancel this run?  [ No ]"
+	yesCancelX = 26 // "[ Yes, cancel ]"
 )
 
 const (
 	runBtn     = "[ Run ]  [ Reject ]"
 	confirmBtn = "Run this?  [ Cancel ]  [ Yes, run ]"
 	armedBtn   = "space again to run · any other key cancels"
+
+	cancelRunBtn     = "[ Cancel run ]"
+	cancelConfirmBtn = "Cancel this run?  [ No ]  [ Yes, cancel ]"
+	cancelArmedBtn   = "c again to cancel this run · any other key keeps it running"
 )
 
 // advanceGuard: after an auto-advance, space/r are ignored so a burst of taps can't run the new item unseen.
@@ -72,6 +80,11 @@ type model struct {
 	confirm  bool // mouse: Run clicked, waiting for Yes
 	armed    bool // keyboard: one space pressed, waiting for the second
 	running  bool
+	// the run this viewer started; cancelRun stops it (nil when nothing runs here)
+	runningID     string
+	cancelRun     context.CancelFunc
+	cancelArmed   bool // keyboard: one c pressed on a running item, waiting for the second
+	cancelConfirm bool // mouse: Cancel run clicked, waiting for Yes
 	scroll   int
 	itemTop  int            // first items-pane row drawn
 	boxTop   map[string]int // first line drawn per box id ("result", "prompt", "file:<name>"); copied on write
@@ -229,10 +242,13 @@ func (m *model) move(d int) {
 
 func outstanding(st string) bool { return st == queue.Pending || st == queue.Running }
 
-// finish is when a completed item ended: the result's RanAt, else (expired) its Expires.
+// finish is when a completed item ended: the result's RanAt, else when it was revoked, else (expired) its Expires.
 func (m *model) finish(it queue.Item) time.Time {
 	if r, err := m.q.ReadResult(it); err == nil {
 		return r.RanAt
+	}
+	if at, ok := m.q.RevokedAt(it); ok {
+		return at
 	}
 	return it.Expires
 }
@@ -290,7 +306,7 @@ func itemRow(it queue.Item, st, ts string) string {
 
 var glyphColor = map[string]lipgloss.Color{
 	queue.Pending: "3", queue.Running: "3", queue.Succeeded: "2", queue.Failed: "1",
-	queue.Rejected: "1", queue.Modified: "1", queue.Expired: "8",
+	queue.Rejected: "1", queue.Modified: "1", queue.Expired: "8", queue.Canceled: "1", queue.Revoked: "8",
 }
 
 // itemPane is the items pane's rows plus, per row, the index of the item it shows (-1: a header).
@@ -380,10 +396,43 @@ func (m *model) startRun() tea.Cmd {
 	}
 	m.confirm, m.armed, m.running, m.status = false, false, true, "running…"
 	q, r := m.q, *m.reviewed
+	ctx, cancel := context.WithCancel(context.Background())
+	m.runningID, m.cancelRun = r.Item.ID, cancel
 	return func() tea.Msg {
-		_, err := runner.Run(context.Background(), q, r, time.Now())
+		_, err := runner.Run(ctx, q, r, time.Now())
 		return runDone{id: r.Item.ID, err: err}
 	}
+}
+
+// cancelable: the selected item is this viewer's run in progress, or a run left behind by a viewer that went away.
+func (m model) cancelable() bool {
+	it := m.item()
+	if it == nil {
+		return false
+	}
+	if m.running {
+		return it.ID == m.runningID
+	}
+	return m.q.State(*it, time.Now()) == queue.Running
+}
+
+// cancel stops the selected run: this viewer's own via its context, a stale one via runner.CancelStale.
+func (m *model) cancel() {
+	m.cancelArmed, m.cancelConfirm = false, false
+	if !m.cancelable() {
+		return
+	}
+	if m.running {
+		m.cancelRun()
+		m.status = "canceling…"
+		return
+	}
+	if err := runner.CancelStale(m.q, *m.item(), time.Now()); err != nil {
+		m.status = "cancel: " + err.Error()
+		return
+	}
+	m.status = "canceled"
+	m.refresh()
 }
 
 func (m *model) reject() {
@@ -444,7 +493,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 		return m, tick()
 	case runDone:
-		m.running, m.status = false, "finished"
+		if m.cancelRun != nil {
+			m.cancelRun() // releases the context
+		}
+		m.running, m.runningID, m.cancelRun, m.cancelArmed, m.cancelConfirm, m.status = false, "", nil, false, false, "finished"
 		if msg.err != nil {
 			m.status = "run: " + msg.err.Error()
 		}
@@ -462,7 +514,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) arm() { m.armed = m.pending() && m.now().Sub(m.advancedAt) >= advanceGuard }
 
 func (m model) key(k string) (tea.Model, tea.Cmd) {
-	if m.running && k != "q" && k != "ctrl+c" {
+	if m.cancelArmed {
+		m.cancelArmed = false
+		if k == "c" {
+			m.cancel()
+		} // any other key only disarms and is not acted on
+		return m, nil
+	}
+	if m.cancelConfirm { // mouse confirm: any key keeps the run
+		m.cancelConfirm = false
+		return m, nil
+	}
+	if m.running && k != "q" && k != "ctrl+c" && k != "c" {
 		return m, nil
 	}
 	if m.armed {
@@ -491,6 +554,8 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		m.arm()
 	case "x":
 		m.reject()
+	case "c":
+		m.cancelArmed = m.cancelable()
 	case "[", "pgup", "]", "pgdown":
 		if b, ok := m.box(m.selBox()); m.focus == 2 && ok {
 			d := b.cap
@@ -520,8 +585,8 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	} else if msg.X < sw+iw {
 		pane = 1
 	}
-	if m.armed && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-		m.armed = false // a click only cancels the arm; it is not acted on
+	if (m.armed || m.cancelArmed) && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		m.armed, m.cancelArmed = false, false // a click only cancels the arm; it is not acted on
 		return m, nil
 	}
 	switch {
@@ -538,6 +603,17 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.move(d)
 		}
 	case msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft:
+	case pane == 2 && msg.Y == buttonY && m.cancelable():
+		x := msg.X - sw - iw
+		switch {
+		case m.cancelConfirm && x >= noX && x < noX+6:
+			m.cancelConfirm = false
+		case m.cancelConfirm && x >= yesCancelX && x < yesCancelX+15:
+			m.cancel()
+		case !m.cancelConfirm && x >= cancelRunX && x < cancelRunX+14:
+			m.cancelConfirm = true
+		}
+		m.focus = 2
 	case pane == 2 && msg.Y == buttonY:
 		x := msg.X - sw - iw
 		switch {
@@ -618,6 +694,13 @@ func (m model) View() string {
 		} else if m.armed {
 			header = warn.Render(armedBtn)
 		}
+	} else if m.cancelable() {
+		header = cancelRunBtn
+		if m.cancelConfirm {
+			header = warn.Render(cancelConfirmBtn)
+		} else if m.cancelArmed {
+			header = warn.Render(cancelArmedBtn)
+		}
 	}
 	body := m.detailLines()
 	body = body[m.bodyTop(len(body)):]
@@ -625,6 +708,9 @@ func (m model) View() string {
 	keys := []string{"↑↓ move", "tab/click pane"}
 	if m.focus > 0 && m.pending() {
 		keys = append(keys, "space space run", "x reject")
+	}
+	if m.focus > 0 && m.cancelable() {
+		keys = append(keys, "c c cancel run")
 	}
 	if m.focus == 2 && len(m.boxes()) > 0 {
 		keys = append(keys, "[ ] scroll · { } next box")
@@ -708,7 +794,7 @@ func age(d time.Duration) string {
 func glyph(state string) string {
 	return map[string]string{
 		queue.Pending: "●", queue.Running: "…", queue.Succeeded: "✓", queue.Failed: "✗",
-		queue.Rejected: "⊘", queue.Expired: "⌛", queue.Modified: "!",
+		queue.Rejected: "⊘", queue.Expired: "⌛", queue.Modified: "!", queue.Canceled: "■", queue.Revoked: "↩",
 	}[state]
 }
 

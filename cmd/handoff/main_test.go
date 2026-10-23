@@ -182,3 +182,47 @@ func TestWaitExitsNonzeroOnReject(t *testing.T) {
 		t.Fatalf("printed result = %q", stdout)
 	}
 }
+
+func TestRevokeOwnSessionOnly(t *testing.T) {
+	root := t.TempDir()
+	out, err := handoff(t, root, sid, "", "add", "--desc", "d", "--", "true").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(string(out))
+	q := &queue.Queue{Root: root}
+	it, _ := q.Load(id)
+
+	if code := exitCode(handoff(t, root, "11111111-2222-3333-4444-555555555555", "", "revoke", id).Run()); code != 1 {
+		t.Fatalf("revoke from another session exit = %d, want 1", code)
+	}
+	if s := q.State(it, time.Now()); s != queue.Pending {
+		t.Fatalf("state after foreign revoke = %s", s)
+	}
+	if code := exitCode(handoff(t, root, "", "", "revoke", id).Run()); code != 1 {
+		t.Fatalf("revoke without a session exit = %d, want 1", code)
+	}
+	if out, err := handoff(t, root, sid, "", "revoke", id).CombinedOutput(); err != nil {
+		t.Fatalf("revoke own item: %v %s", err, out)
+	}
+	if s := q.State(it, time.Now()); s != queue.Revoked {
+		t.Fatalf("state = %s, want revoked", s)
+	}
+	if code := exitCode(handoff(t, root, sid, "", "revoke").Run()); code != 2 {
+		t.Fatalf("revoke with no id exit = %d, want 2", code)
+	}
+}
+
+func TestWaitExitsOnRevoke(t *testing.T) {
+	root := t.TempDir()
+	_, it, cmd, stdout := stageAndWait(t, root, "/usr/bin/true")
+	if out, err := handoff(t, root, sid, "", "revoke", it.ID).CombinedOutput(); err != nil {
+		t.Fatalf("revoke: %v %s", err, out)
+	}
+	if code := exitCode(cmd.Wait()); code != 1 {
+		t.Fatalf("add --wait after revoke exit = %d, want 1", code)
+	}
+	if !strings.Contains(stdout.String(), `"revoked"`) {
+		t.Fatalf("printed result = %q", stdout)
+	}
+}

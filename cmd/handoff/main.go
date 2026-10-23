@@ -23,6 +23,7 @@ import (
 const usage = `usage:
   handoff                                   open the viewer
   handoff add --desc "…" [--reason r] [--file name=path …] [--wait] -- <argv…>
+  handoff revoke <id>…                      withdraw this session's not-yet-run items
   handoff hook session-start|prompt         (called by the Claude Code plugin)
 `
 
@@ -43,6 +44,8 @@ func main() {
 		err = tui.Run(q, home)
 	case args[0] == "add":
 		os.Exit(add(q, args[1:]))
+	case args[0] == "revoke":
+		os.Exit(revoke(q, args[1:]))
 	case args[0] == "hook" && len(args) == 2 && (args[1] == "session-start" || args[1] == "prompt"):
 		err = runHook(q, args[1])
 	default:
@@ -90,6 +93,43 @@ func fail(err error) {
 	os.Exit(1)
 }
 
+func sessionID() (string, bool) {
+	sid := os.Getenv("HANDOFF_SESSION_ID")
+	if sid == "" {
+		sid = os.Getenv("CLAUDE_CODE_SESSION_ID") // set by Claude Code in its Bash tool
+	}
+	if sid == "" {
+		fmt.Fprintln(os.Stderr, "handoff: no session id (CLAUDE_CODE_SESSION_ID or HANDOFF_SESSION_ID); run this from Claude Code")
+	}
+	return sid, sid != ""
+}
+
+// revoke withdraws items this session staged that haven't run yet, e.g. when a newer item replaces one.
+func revoke(q *queue.Queue, ids []string) int {
+	if len(ids) == 0 {
+		fmt.Fprint(os.Stderr, usage)
+		return 2
+	}
+	sid, ok := sessionID()
+	if !ok {
+		return 1
+	}
+	code := 0
+	for _, id := range ids {
+		it, err := q.Load(id)
+		if err == nil {
+			err = q.Revoke(it, sid)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "handoff: %s: %v\n", id, err)
+			code = 1
+			continue
+		}
+		fmt.Println("revoked", id)
+	}
+	return code
+}
+
 func add(q *queue.Queue, args []string) int {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	desc := fs.String("desc", "", "what the command does, for the reviewer")
@@ -111,12 +151,8 @@ func add(q *queue.Queue, args []string) int {
 		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
-	sid := os.Getenv("HANDOFF_SESSION_ID")
-	if sid == "" {
-		sid = os.Getenv("CLAUDE_CODE_SESSION_ID") // set by Claude Code in its Bash tool
-	}
-	if sid == "" {
-		fmt.Fprintln(os.Stderr, "handoff: no session id (CLAUDE_CODE_SESSION_ID or HANDOFF_SESSION_ID); run this from Claude Code")
+	sid, ok := sessionID()
+	if !ok {
 		return 1
 	}
 	cwd, err := os.Getwd()

@@ -231,3 +231,57 @@ func TestSnapshotFileHashesMatchShasum(t *testing.T) {
 		t.Errorf("combined Hash = %s, want %s", r.Hash, want)
 	}
 }
+
+func TestRevoke(t *testing.T) {
+	q, body := newQueue(t)
+	it := addOne(t, q, body)
+	if err := q.Revoke(it, "another-session"); err == nil {
+		t.Fatal("revoked an item staged by another session")
+	}
+	if s := q.State(it, time.Now()); s != Pending {
+		t.Fatalf("state after refused revoke = %s", s)
+	}
+	if err := q.Revoke(it, sid); err != nil {
+		t.Fatal(err)
+	}
+	if s := q.State(it, time.Now()); s != Revoked {
+		t.Fatalf("state = %s, want revoked", s)
+	}
+	if err := q.Revoke(it, sid); err == nil {
+		t.Fatal("revoking twice should report it is no longer pending")
+	}
+}
+
+func TestRevokeTooLateOnceClaimed(t *testing.T) {
+	q, body := newQueue(t)
+	it := addOne(t, q, body)
+	if err := q.Claim(it); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Revoke(it, sid); err == nil {
+		t.Fatal("revoke must not succeed once the item is running")
+	}
+	if s := q.State(it, time.Now()); s != Running {
+		t.Fatalf("state = %s, want running (a run is never revoked)", s)
+	}
+}
+
+func TestRecordPID(t *testing.T) {
+	q, body := newQueue(t)
+	it := addOne(t, q, body)
+	if err := q.RecordPID(it, 1234); err == nil {
+		t.Fatal("recorded a pid for an unclaimed item")
+	}
+	if err := q.Claim(it); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := q.ClaimPID(it); ok {
+		t.Fatal("a fresh claim has no pid")
+	}
+	if err := q.RecordPID(it, 1234); err != nil {
+		t.Fatal(err)
+	}
+	if pid, ok := q.ClaimPID(it); !ok || pid != 1234 {
+		t.Fatalf("ClaimPID = %d %v", pid, ok)
+	}
+}

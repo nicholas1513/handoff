@@ -1090,3 +1090,113 @@ func TestFramedBoxWrapsToInnerWidth(t *testing.T) {
 		t.Fatalf("wrapped text lost characters: %q", got)
 	}
 }
+
+// stale makes the selected item "running" with no live run in this viewer (its viewer went away).
+func stale(t *testing.T, q *queue.Queue, m model) (model, queue.Item) {
+	t.Helper()
+	it := *m.item()
+	if err := q.Claim(it); err != nil {
+		t.Fatal(err)
+	}
+	m.refresh()
+	if m.item().ID != it.ID {
+		t.Fatal("selection moved off the claimed item")
+	}
+	return m, it
+}
+
+func TestCCCancelsStaleRun(t *testing.T) {
+	q, m := setup(t)
+	m, it := stale(t, q, m)
+	m.focus = 2
+	if v := m.View(); !strings.Contains(v, "[ Cancel run ]") || !strings.Contains(v, "c c cancel run") {
+		t.Fatal("a running item should offer Cancel run")
+	}
+	m, _ = press(m, "c")
+	if !m.cancelArmed || q.State(it, time.Now()) != queue.Running {
+		t.Fatal("one c must only arm")
+	}
+	if !strings.Contains(m.View(), "c again to cancel") {
+		t.Fatal("armed cancel prompt not shown")
+	}
+	m, _ = press(m, "c")
+	if s := q.State(it, time.Now()); s != queue.Canceled {
+		t.Fatalf("state after c c = %s, want canceled", s)
+	}
+}
+
+func TestOtherKeyDisarmsCancelAndIsNotActedOn(t *testing.T) {
+	q, m := setup(t)
+	m, it := stale(t, q, m)
+	m, _ = press(m, "c")
+	m, _ = press(m, "q")
+	if m.cancelArmed || q.State(it, time.Now()) != queue.Running {
+		t.Fatal("another key must disarm the cancel and leave the run alone")
+	}
+}
+
+func TestCCCancelsLiveRun(t *testing.T) {
+	_, m := setup(t)
+	called := false
+	m.running, m.runningID, m.cancelRun = true, m.item().ID, func() { called = true }
+	m, _ = press(m, "c")
+	m, _ = press(m, "c")
+	if !called {
+		t.Fatal("c c did not cancel the run in progress")
+	}
+	m.focus, m.ii = 1, 0
+	m, _ = press(m, "j")
+	if m.ii != 0 {
+		t.Fatal("other keys are still dropped while running")
+	}
+}
+
+func TestCancelButtonNeedsConfirm(t *testing.T) {
+	q, m := setup(t)
+	m, it := stale(t, q, m)
+	dx := func() int { sw, iw, _ := columns(m.w); return sw + iw }()
+	m, _ = click(m, dx+cancelRunX+1, buttonY)
+	if !m.cancelConfirm || q.State(it, time.Now()) != queue.Running {
+		t.Fatal("clicking Cancel run should only ask for confirmation")
+	}
+	if !strings.Contains(m.View(), "Yes, cancel") {
+		t.Fatal("cancel confirmation not shown")
+	}
+	m, _ = click(m, dx+noX+1, buttonY)
+	if m.cancelConfirm || q.State(it, time.Now()) != queue.Running {
+		t.Fatal("No must keep the run")
+	}
+	m, _ = click(m, dx+cancelRunX+1, buttonY)
+	m, _ = click(m, dx+yesCancelX+1, buttonY)
+	if s := q.State(it, time.Now()); s != queue.Canceled {
+		t.Fatalf("state after Yes, cancel = %s", s)
+	}
+}
+
+func TestRevokedItemIsFinishedAndCannotRun(t *testing.T) {
+	q, m := setup(t)
+	it := *m.item()
+	if err := q.Revoke(it, sid); err != nil {
+		t.Fatal(err)
+	}
+	m.refresh()
+	m.ii = indexOf(m, it.ID)
+	m.open()
+	m, _ = press(m, " ")
+	m, cmd := press(m, " ")
+	if cmd != nil || q.State(it, time.Now()) != queue.Revoked {
+		t.Fatal("a revoked item must not run")
+	}
+	if !strings.Contains(m.View(), "REVOKED") {
+		t.Fatal("detail should show the revoked state")
+	}
+}
+
+func indexOf(m model, id string) int {
+	for i, it := range m.session().items {
+		if it.ID == id {
+			return i
+		}
+	}
+	return -1
+}

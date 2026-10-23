@@ -20,8 +20,9 @@ handoff add --wait --desc "<what it does and why, one or two lines>" \
   -- az rest --method post --url "https://…" --body "@{file:body.json}"
 ```
 
-Run it with `run_in_background: true`. It exits when the user runs, rejects or lets the item
-expire (24h), and prints the result as JSON. Exit 0 only if the command succeeded.
+Run it with `run_in_background: true`. It exits when the user runs, rejects or cancels it, when
+you revoke it, or when it expires (24h), and prints the result as JSON. Exit 0 only if the command
+succeeded. It prints `staged <id>` first; keep the id.
 
 - `--` then the argv. **No shell:** no pipes, `&&`, `$()`, redirects or globs. One command per item.
   Don't wrap in `bash -c`; the viewer flags interpreters and the user will likely reject it.
@@ -30,6 +31,19 @@ expire (24h), and prints the result as JSON. Exit 0 only if the command succeede
 - `--reason`: `sandbox-blocked` when the command failed only on the sandbox, `needs-login` when it
   needs the user's CLI login.
 - Never put credentials or tokens in argv or files. The user's CLI already has their login.
+
+## Revoke what you no longer want
+
+If an item hasn't run yet and you no longer want it (you staged a corrected or combined version,
+the plan changed, or the user said not to), revoke it **before** staging a replacement:
+
+```
+handoff revoke <id>
+```
+
+Only your own session's items, and only ones not yet run: once the user starts a run it's theirs to
+cancel. Never leave two items queued that would both do the job (e.g. two `git commit -a`); whichever
+the user approves first runs, and the other runs later with stale content.
 
 ## Chain
 

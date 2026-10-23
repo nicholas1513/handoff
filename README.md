@@ -58,7 +58,8 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 ## Use
 
 - **Agent:** `handoff add --wait --desc "…" [--reason sandbox-blocked] [--file name=path] -- <argv…>`,
-  run in the background. Attachments are referred to in argv as `{file:name}`. See
+  run in the background. `handoff revoke <id>…` withdraws the session's own items that haven't run
+  yet (e.g. one a newer item replaces); a waiting `add --wait` then exits with state `revoked`. Attachments are referred to in argv as `{file:name}`. See
   `plugin/skills/handoff/SKILL.md`.
 - **You:** run `handoff` (or `! handoff` from the Claude prompt). Sessions | items | detail.
   Press `space` twice to run the selected item (any other key cancels), or click **Run** (then
@@ -80,6 +81,8 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 | Run twice / run after reject | A claim file is created exclusively before running or rejecting. |
 | Terminal tricks in displayed text | Control characters, ANSI escapes and invisible/bidi formatting characters are shown escaped. |
 | Stale items | Items expire 24h after creation; stretched expiry in `item.json` is rejected. |
+| Agent revokes another session's item | `handoff revoke` refuses items from other sessions. The marker sits in the sandbox-writable `queue/<id>/revoked`, so an agent writing it by hand isn't blocked, but a marker can only stop an item, never run one, and a claimed (running) item ignores it. |
+| Cancel signals an unrelated process | A stale run's pid is signalled only if the kernel still reports the item's program for it, so a reused pid is left alone. |
 
 Remaining gap: an agent can name another real session's id. The viewer then shows that session's
 real prompt and directory, so a mismatch is visible but not blocked.
@@ -89,9 +92,10 @@ real prompt and directory, so a mismatch is visible but not blocked.
 ```
 ~/.handoff/
   queue/<id>/item.json, files/<name>        agent (sandbox-writable)
+  queue/<id>/revoked                        agent: `handoff revoke`
   sessions/<sid>/session.json               SessionStart hook
   sessions/<sid>/prompts/<ts>.json          UserPromptSubmit hook, newest 20 kept
-  sessions/<sid>/results/<id>.json|.claim   viewer
+  sessions/<sid>/results/<id>.json|.claim   viewer (.claim holds the run's pid once started)
   snap/<id>/<name>                          viewer: reviewed attachments
   hook.log                                  hooks: one line per call (no prompt text)
 ```
@@ -109,5 +113,5 @@ Inside the Claude Code sandbox, point Go's caches somewhere writable first:
 sandbox's network allowlist. The sandbox also blocks writes to `.git/config` and `.git/hooks`, so
 run `git init` and similar commands yourself.
 
-Deferred to v2: batches, fsnotify (the viewer re-reads every 2s), `init`, `gc` (clears stuck
-`running` items and old directories), Homebrew formula, remembered auto-run rules.
+Deferred to v2: batches, fsnotify (the viewer re-reads every 2s), `init`, `gc` (old
+directories; stuck `running` items are ended with `c c` in the viewer), Homebrew formula, remembered auto-run rules.
