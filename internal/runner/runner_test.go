@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -119,5 +121,118 @@ func TestRunsInterpreter(t *testing.T) {
 		if got := RunsInterpreter([]string{argv0, "x"}); got != want {
 			t.Errorf("RunsInterpreter(%q) = %v, want %v", argv0, got, want)
 		}
+	}
+}
+
+func TestCancelStopsRunAndWhatItStarted(t *testing.T) {
+	// A background child holds stdout open, so only a process-group signal ends this promptly.
+	q, r := stage(t, "/bin/sh", "-c", "sleep 30 & sleep 30")
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	start := time.Now()
+	res, err := Run(ctx, q, r, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("cancel took %v: the process group was not stopped", d)
+	}
+	if res.State != queue.Canceled || !strings.Contains(res.Stderr, "canceled") {
+		t.Fatalf("got %+v, want canceled", res)
+	}
+	if s := q.State(r.Item, time.Now()); s != queue.Canceled {
+		t.Fatalf("recorded state = %s", s)
+	}
+}
+
+func TestRunRecordsPID(t *testing.T) {
+	q, r := stage(t, "/bin/sleep", "30")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { Run(ctx, q, r, time.Now()); close(done) }()
+	pid := 0
+	for i := 0; i < 100 && pid == 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+		pid, _ = q.ClaimPID(r.Item)
+	}
+	cancel()
+	<-done
+	if pid == 0 {
+		t.Fatal("running item has no recorded pid")
+	}
+}
+
+// sleeper starts a stand-in for a run left behind by a viewer that went away.
+func sleeper(t *testing.T) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("/bin/sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	return cmd
+}
+
+func claimed(t *testing.T, argv ...string) (*queue.Queue, queue.Reviewed) {
+	t.Helper()
+	q, r := stage(t, argv...)
+	if err := q.Claim(r.Item); err != nil {
+		t.Fatal(err)
+	}
+	return q, r
+}
+
+func TestCancelStaleStopsRecordedProcess(t *testing.T) {
+	q, r := claimed(t, "/bin/sleep", "30")
+	p := sleeper(t)
+	q.RecordPID(r.Item, p.Process.Pid)
+	if err := CancelStale(q, r.Item, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() { p.Wait(); close(exited) }()
+	select {
+	case <-exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the recorded process is still running")
+	}
+	if res, _ := q.ReadResult(r.Item); res.State != queue.Canceled || !strings.Contains(res.Stderr, "stopped process") {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestCancelStaleLeavesReusedPIDAlone(t *testing.T) {
+	q, r := claimed(t, "/usr/bin/true") // the recorded pid now belongs to a different program
+	p := sleeper(t)
+	q.RecordPID(r.Item, p.Process.Pid)
+	if err := CancelStale(q, r.Item, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(p.Process.Pid, 0); err != nil {
+		t.Fatal("an unrelated process was signalled")
+	}
+	if res, _ := q.ReadResult(r.Item); res.State != queue.Canceled || !strings.Contains(res.Stderr, "nothing was stopped") {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestCancelStaleWithoutPID(t *testing.T) {
+	q, r := claimed(t, "/bin/sleep", "30")
+	if err := CancelStale(q, r.Item, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := q.ReadResult(r.Item); res.State != queue.Canceled || !strings.Contains(res.Stderr, "no process was recorded") {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestCancelStaleOnlyForRunning(t *testing.T) {
+	q, r := stage(t, "/usr/bin/true")
+	if err := CancelStale(q, r.Item, time.Now()); err == nil {
+		t.Fatal("canceled a pending item")
+	}
+	if s := q.State(r.Item, time.Now()); s != queue.Pending {
+		t.Fatalf("state = %s", s)
 	}
 }

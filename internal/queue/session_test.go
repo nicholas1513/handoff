@@ -58,3 +58,16 @@ func TestWait(t *testing.T) {
 		t.Fatalf("Wait on expired = %+v", r)
 	}
 }
+
+func TestWaitReturnsOnRevoke(t *testing.T) {
+	q, body := newQueue(t)
+	it := addOne(t, q, body)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		q.Revoke(it, sid)
+	}()
+	r, err := q.Wait(context.Background(), it, 10*time.Millisecond)
+	if err != nil || r.State != Revoked {
+		t.Fatalf("Wait = %+v %v, want revoked", r, err)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/nicholas1513/handoff/internal/queue"
@@ -55,12 +56,22 @@ func Run(ctx context.Context, q *queue.Queue, r queue.Reviewed, now time.Time) (
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = r.Item.Cwd
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err = cmd.Run()
+	// Own process group, so canceling also stops what the command started (e.g. ssh under a script).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = 3 * time.Second // then the leader is killed and pipes held by stragglers are closed
+	if err = cmd.Start(); err == nil {
+		q.RecordPID(r.Item, cmd.Process.Pid) // best effort: lets a later viewer stop this run if this one goes away
+		err = cmd.Wait()
+	}
 
 	// shortcut: output is kept whole in memory and in result.json; cap it if huge outputs show up.
 	res := queue.Result{State: queue.Succeeded, Stdout: stdout.String(), Stderr: stderr.String(), RanAt: time.Now(), SHA256Reviewed: r.Hash}
 	var exitErr *exec.ExitError
 	switch {
+	case ctx.Err() != nil && err != nil:
+		res.State, res.ExitCode = queue.Canceled, -1
+		res.Stderr += "\ncanceled by the reviewer"
 	case errors.As(err, &exitErr):
 		res.State, res.ExitCode = queue.Failed, exitErr.ExitCode()
 	case err != nil: // didn't start: not found, bad cwd
@@ -68,6 +79,31 @@ func Run(ctx context.Context, q *queue.Queue, r queue.Reviewed, now time.Time) (
 		res.Stderr += err.Error()
 	}
 	return res, q.WriteResult(r.Item, res)
+}
+
+// CancelStale ends an item left "running" by a viewer that went away (quit or crashed mid-run). It
+// stops the recorded process group only if that pid still runs the item's program, so a pid the OS
+// has since reused for something else is never signalled.
+func CancelStale(q *queue.Queue, it queue.Item, now time.Time) error {
+	if s := q.State(it, now); s != queue.Running {
+		return fmt.Errorf("item is %s", s)
+	}
+	note := "canceled by the reviewer; no process was recorded for this run, so none was stopped"
+	if pid, ok := q.ClaimPID(it); ok {
+		note = fmt.Sprintf("canceled by the reviewer; process %d is no longer running %s, so nothing was stopped", pid, it.Argv[0])
+		if runsProgram(pid, it.Argv[0]) {
+			syscall.Kill(-pid, syscall.SIGTERM)
+			note = fmt.Sprintf("canceled by the reviewer; stopped process group %d", pid)
+		}
+	}
+	return q.WriteResult(it, queue.Result{State: queue.Canceled, ExitCode: -1, Stderr: note, RanAt: now})
+}
+
+// runsProgram reports whether pid is running argv0. Kernels truncate process names (15 or 16 bytes),
+// so a name at that length only has to be a prefix of argv0's base name.
+func runsProgram(pid int, argv0 string) bool {
+	name, want := procName(pid), filepath.Base(argv0)
+	return name != "" && (name == want || (len(name) >= 15 && strings.HasPrefix(want, name)))
 }
 
 // Programs that run other code from their arguments, so argv alone doesn't show what will happen.

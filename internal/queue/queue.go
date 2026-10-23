@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,6 +36,8 @@ const (
 	Rejected  = "rejected"
 	Expired   = "expired"
 	Modified  = "modified"
+	Canceled  = "canceled" // the reviewer stopped a run
+	Revoked   = "revoked"  // the agent withdrew it before it ran; derived from a marker in queue/<id>/
 )
 
 var ErrModified = errors.New("item changed after review")
@@ -250,14 +253,17 @@ func (q *Queue) Verify(r Reviewed) error {
 	return nil
 }
 
+func (q *Queue) claimPath(it Item) string { return strings.TrimSuffix(q.resultPath(it), ".json") + ".claim" }
+
+func (q *Queue) revokedPath(it Item) string { return filepath.Join(q.itemDir(it.ID), "revoked") }
+
 // Claim marks it as started. Only the first claim succeeds, so an item can't run twice even if two
-// viewers race.
-// shortcut: a crash between Claim and WriteResult leaves the item "running" forever; add recovery with gc.
+// viewers race. A run left "running" by a viewer that went away is ended with runner.CancelStale.
 func (q *Queue) Claim(it Item) error {
 	if err := validate(it); err != nil {
 		return err
 	}
-	p := strings.TrimSuffix(q.resultPath(it), ".json") + ".claim"
+	p := q.claimPath(it)
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
@@ -266,6 +272,62 @@ func (q *Queue) Claim(it Item) error {
 		return err
 	}
 	return f.Close()
+}
+
+// RecordPID stores the running process's pid in the claim, so a later viewer can stop a run whose
+// viewer went away.
+func (q *Queue) RecordPID(it Item, pid int) error {
+	if err := validate(it); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(q.claimPath(it), os.O_WRONLY|os.O_TRUNC, 0o600) // no O_CREATE: only a claimed item
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprint(f, pid)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// ClaimPID is the pid RecordPID stored, if any.
+func (q *Queue) ClaimPID(it Item) (int, bool) {
+	b, err := os.ReadFile(q.claimPath(it))
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	return pid, err == nil && pid > 0
+}
+
+// Revoke withdraws a pending item for the agent session that staged it. The marker lives in the
+// sandbox-writable queue dir, so an agent could also write it by hand for another session's item; a
+// marker can only ever stop a run, never start one. Once claimed, an item is the reviewer's to stop.
+func (q *Queue) Revoke(it Item, sessionID string) error {
+	if sessionID != it.SessionID {
+		return fmt.Errorf("item %s was staged by another session", it.ID)
+	}
+	if s := q.State(it, time.Now()); s != Pending {
+		return fmt.Errorf("item is %s", s)
+	}
+	if err := os.WriteFile(q.revokedPath(it), []byte(time.Now().Format(time.RFC3339Nano)), 0o600); err != nil {
+		return err
+	}
+	// The viewer may have claimed it between the check and the marker; then the run wins.
+	if s := q.State(it, time.Now()); s != Revoked {
+		return fmt.Errorf("too late: item is %s", s)
+	}
+	return nil
+}
+
+// RevokedAt is when the item was revoked, if it was.
+func (q *Queue) RevokedAt(it Item) (time.Time, bool) {
+	fi, err := os.Stat(q.revokedPath(it))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return fi.ModTime(), true
 }
 
 // WriteResult records the outcome once. A second write fails, which is what makes items run-once.
@@ -301,13 +363,17 @@ func (q *Queue) ReadResult(it Item) (Result, error) {
 	return r, json.Unmarshal(b, &r)
 }
 
-// State is the result's state if there is one, otherwise pending or expired.
+// State is the result's state if there is one, otherwise running, revoked, pending or expired.
+// A claim outranks a revoke marker: once claimed, the run goes ahead.
 func (q *Queue) State(it Item, now time.Time) string {
 	if r, err := q.ReadResult(it); err == nil {
 		return r.State
 	}
-	if _, err := os.Stat(strings.TrimSuffix(q.resultPath(it), ".json") + ".claim"); err == nil {
+	if _, err := os.Stat(q.claimPath(it)); err == nil {
 		return Running
+	}
+	if _, ok := q.RevokedAt(it); ok {
+		return Revoked
 	}
 	if now.After(it.Expires) {
 		return Expired

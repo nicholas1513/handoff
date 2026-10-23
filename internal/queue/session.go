@@ -122,6 +122,9 @@ func (q *Queue) Wait(ctx context.Context, it Item, every time.Duration) (Result,
 		if r, err := q.ReadResult(it); err == nil {
 			return r, nil
 		}
+		if at, ok := q.RevokedAt(it); ok && q.State(it, time.Now()) == Revoked {
+			return Result{State: Revoked, ExitCode: -1, RanAt: at}, nil
+		}
 		if time.Now().After(it.Expires) {
 			return Result{State: Expired, ExitCode: -1}, nil
 		}
