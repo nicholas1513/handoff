@@ -61,6 +61,14 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   run in the background. `handoff revoke <id>…` withdraws the session's own items that haven't run
   yet (e.g. one a newer item replaces); a waiting `add --wait` then exits with state `revoked`. Attachments are referred to in argv as `{file:name}`. See
   `plugin/skills/handoff/SKILL.md`.
+- **Agent, file edits:** `handoff add --wait --desc "…" --edit <target>=<proposed>` stages a whole-file
+  replacement. The viewer shows a unified diff of the target against the proposal (taken when you
+  open the item) instead of the file, and Run refuses with `modified` if the target changed since.
+  The diff sits in a scrolling box (half the window at most). Click a `[+] ↓` / `[+] ↑` row to reveal
+  10 more unchanged lines below the hunk above / above the hunk below (`[+] ↕` reveals a small gap
+  whole), or press `+` to widen every gap. `s` (or clicking `s settings` in the footer) opens
+  settings: diff word wrap on/off, saved in `~/.handoff/viewer.json`. With wrap off, `<` `>` or a
+  sideways scroll pans, and `‹` `›` mark lines that continue off-screen.
 - **You:** run `handoff` (or `! handoff` from the Claude prompt). Sessions | items | detail.
   Press `space` twice to run the selected item (any other key cancels), or click **Run** (then
   confirm). `r` is an alias for the first `space`. `x` or **Reject**, `o` re-open after a change,
@@ -78,6 +86,7 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 | Agent forges which prompt or session asked for it | Hooks run outside the sandbox and write `~/.handoff/sessions/`, which the sandbox can't. The viewer reads provenance from there and marks sessions with no hook record **unverified**. |
 | Shell injection | argv is executed directly, never through a shell. Interpreters (`bash -c`, `python -c`, `env`, `xargs`, …) are flagged. |
 | Item or attachment changed after review | The viewer hashes what it showed and copies attachments to `~/.handoff/snap/`. Run re-verifies the hash, refuses with `modified` if it changed, and passes the snapshot paths, not the live files. |
+| Edit diff shows one file but writes another | An edit item's argv must be exactly `/bin/cp {file:proposed} <target>` for its own absolute target, or it fails to load. Run also refuses if the target's hash differs from when the diff was taken. |
 | Run twice / run after reject | A claim file is created exclusively before running or rejecting. |
 | Terminal tricks in displayed text | Control characters, ANSI escapes and invisible/bidi formatting characters are shown escaped. |
 | Stale items | Items expire 24h after creation; stretched expiry in `item.json` is rejected. |

@@ -32,6 +32,22 @@ succeeded. It prints `staged <id>` first; keep the id.
   needs the user's CLI login.
 - Never put credentials or tokens in argv or files. The user's CLI already has their login.
 
+## Propose a file edit
+
+To change a file you can't write (sandbox or a deny rule on it), write the complete new contents to
+a scratch file and stage:
+
+```
+handoff add --wait --desc "<what changes and why>" --reason sandbox-blocked \
+  --edit <target>=<scratch file with the full new contents>
+```
+
+No `--` and no argv: the command is always `/bin/cp {file:proposed} <target>`. The user sees a
+unified diff against the target as it is when they open the item, not the whole file, and the run
+is refused (`modified`) if the target changes after they opened it. A missing target is created.
+This is the one case where staging for a file denied to you is fine, and only when the user asked for
+that change: they review the exact diff before anything is written. One file per item.
+
 ## Revoke what you no longer want
 
 If an item hasn't run yet and you no longer want it (you staged a corrected or combined version,

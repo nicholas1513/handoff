@@ -6,6 +6,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/nicholas1513/handoff/internal/queue"
 	"github.com/nicholas1513/handoff/internal/runner"
@@ -89,6 +91,11 @@ type model struct {
 	itemTop  int            // first items-pane row drawn
 	boxTop   map[string]int // first line drawn per box id ("result", "prompt", "file:<name>"); copied on write
 	boxSel   string         // selected box; "" or an unframed id means the first framed box
+	diff     fileDiff       // the reviewed edit item's diff, parsed at open
+	diffExp  map[int][2]int // context revealed per gap between hunks; copied on write
+	diffX    int            // diff pan offset when wrap is off
+	settings viewerSettings
+	menu     bool // the settings overlay is open
 	status   string
 	w, h     int
 	titles   titleCache
@@ -104,6 +111,10 @@ func Run(q *queue.Queue, home string) error {
 
 func newModel(q *queue.Queue, home string) model {
 	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}, now: time.Now}
+	var err error
+	if m.settings, err = loadSettings(q.Root); err != nil {
+		m.status = "settings: " + err.Error()
+	}
 	m.refresh()
 	return m
 }
@@ -219,10 +230,39 @@ func (m *model) open() {
 	}
 	r, err := m.q.Snapshot(it.ID)
 	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll = &r, err, false, false, false, 0
-	m.boxTop, m.boxSel = nil, ""
+	m.boxTop, m.boxSel, m.diff, m.diffExp, m.diffX = nil, "", fileDiff{}, nil, 0
 	if err != nil {
 		m.reviewed = nil
+	} else if r.Item.Edit != "" {
+		base, _ := os.ReadFile(filepath.Join(r.SnapDir, queue.EditBase)) // unreadable: the diff is shown unparsed
+		m.diff = parseDiff(r.Diff, string(base))
 	}
+}
+
+// expandDiff applies one [+] row, or every one when a is nil.
+func (m *model) expandDiff(a *expand) {
+	if a == nil {
+		m.diffExp = m.diff.expandAll(m.diffExp)
+	} else {
+		m.diffExp = applyExpand(m.diffExp, *a)
+	}
+}
+
+// panDiff moves the unwrapped diff sideways, kept within its widest line.
+func (m *model) panDiff(d int) {
+	if _, ok := m.box(diffBox); ok && !m.settings.DiffWrap {
+		_, _, dw := columns(m.w)
+		m.diffX = max(0, min(m.diffX+d, m.diffWidest()-(dw-6)))
+	}
+}
+
+func (m *model) toggleWrap() {
+	m.settings.DiffWrap = !m.settings.DiffWrap
+	m.diffX = 0
+	if err := saveSettings(m.q.Root, m.settings); err != nil {
+		m.status = "settings: " + err.Error()
+	}
+	m.clampScroll()
 }
 
 func (m *model) move(d int) {
@@ -514,6 +554,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) arm() { m.armed = m.pending() && m.now().Sub(m.advancedAt) >= advanceGuard }
 
 func (m model) key(k string) (tea.Model, tea.Cmd) {
+	if m.menu { // the overlay takes every key while open
+		switch k {
+		case " ", "enter":
+			m.toggleWrap()
+		case "esc", "s", "q":
+			m.menu = false
+		}
+		return m, nil
+	}
 	if m.cancelArmed {
 		m.cancelArmed = false
 		if k == "c" {
@@ -525,7 +574,7 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		m.cancelConfirm = false
 		return m, nil
 	}
-	if m.running && k != "q" && k != "ctrl+c" && k != "c" {
+	if m.running && k != "q" && k != "ctrl+c" && k != "c" && k != "s" {
 		return m, nil
 	}
 	if m.armed {
@@ -573,9 +622,54 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 	case "o":
 		m.reviewed = nil
 		m.open()
+	case "s":
+		m.menu = true
+	case "+":
+		if _, ok := m.box(diffBox); ok {
+			m.expandDiff(nil)
+			m.clampScroll()
+		}
+	case "<", ">":
+		_, _, dw := columns(m.w)
+		m.panDiff(map[string]int{"<": -1, ">": 1}[k] * max(1, (dw-6)/2))
 	}
 	return m, nil
 }
+
+const settingsKey = "s settings"
+
+// footer is the status line, and the column its settings hint starts at, for the mouse.
+func (m model) footer() (string, int) {
+	keys := []string{"↑↓ move", "tab/click pane"}
+	if m.focus > 0 && m.pending() {
+		keys = append(keys, "space space run", "x reject")
+	}
+	if m.focus > 0 && m.cancelable() {
+		keys = append(keys, "c c cancel run")
+	}
+	if m.focus == 2 && len(m.boxes()) > 0 {
+		keys = append(keys, "[ ] scroll · { } next box")
+	}
+	if _, ok := m.box(diffBox); ok {
+		keys = append(keys, "+ more context")
+		if !m.settings.DiffWrap {
+			keys = append(keys, "< > pan")
+		}
+	}
+	if m.changed {
+		keys = append(keys, "o re-open")
+	}
+	plain := strings.Join(append(keys, settingsKey, "q quit"), " · ")
+	status, x := dim.Render(plain), ansi.StringWidth(plain[:strings.Index(plain, settingsKey)])
+	if m.status != "" {
+		status = m.status + dim.Render("  ·  ") + status
+		x += ansi.StringWidth(m.status + "  ·  ")
+	}
+	return status, x
+}
+
+// statusY is the footer's screen row: below the panes, which are max(5, h-3) rows plus their borders.
+func (m model) statusY() int { return max(5, m.h-3) + 2 }
 
 func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	sw, iw, _ := columns(m.w)
@@ -585,7 +679,20 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	} else if msg.X < sw+iw {
 		pane = 1
 	}
-	if (m.armed || m.cancelArmed) && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+	press := msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft
+	if m.menu { // the overlay takes every click while open
+		if press {
+			ol, ox, oy := m.overlay()
+			inside := msg.X >= ox && msg.X < ox+lipgloss.Width(ol[0]) && msg.Y >= oy && msg.Y < oy+len(ol)
+			if msg.Y == oy+settingsRow && inside {
+				m.toggleWrap()
+			} else if !inside {
+				m.menu = false
+			}
+		}
+		return m, nil
+	}
+	if (m.armed || m.cancelArmed) && press {
 		m.armed, m.cancelArmed = false, false // a click only cancels the arm; it is not acted on
 		return m, nil
 	}
@@ -596,13 +703,21 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if msg.Button == tea.MouseButtonWheelUp {
 			d = -1
 		}
-		if id, ok := m.boxAt(msg.Y); pane == 2 && ok {
+		if id, _, ok := m.boxAt(msg.Y); pane == 2 && ok {
 			m.scrollBox(id, 3*d)
 			m.boxSel = id
 		} else {
 			m.move(d)
 		}
-	case msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft:
+	case msg.Button == tea.MouseButtonWheelLeft || msg.Button == tea.MouseButtonWheelRight:
+		if id, _, ok := m.boxAt(msg.Y); pane == 2 && ok && id == diffBox {
+			m.panDiff(map[bool]int{true: -4, false: 4}[msg.Button == tea.MouseButtonWheelLeft])
+		}
+	case !press:
+	case msg.Y == m.statusY():
+		if _, x := m.footer(); msg.X >= x && msg.X < x+len(settingsKey) {
+			m.menu = true
+		}
 	case pane == 2 && msg.Y == buttonY && m.cancelable():
 		x := msg.X - sw - iw
 		switch {
@@ -647,6 +762,13 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.open()
 	default:
 		m.focus = pane
+		if id, line, ok := m.boxAt(msg.Y); pane == 2 && ok && id == diffBox {
+			m.boxSel = id
+			if b, _ := m.box(diffBox); line < len(b.meta) && b.meta[line].act != nil {
+				m.expandDiff(b.meta[line].act)
+				m.clampScroll()
+			}
+		}
 	}
 	return m, nil
 }
@@ -705,24 +827,8 @@ func (m model) View() string {
 	body := m.detailLines()
 	body = body[m.bodyTop(len(body)):]
 
-	keys := []string{"↑↓ move", "tab/click pane"}
-	if m.focus > 0 && m.pending() {
-		keys = append(keys, "space space run", "x reject")
-	}
-	if m.focus > 0 && m.cancelable() {
-		keys = append(keys, "c c cancel run")
-	}
-	if m.focus == 2 && len(m.boxes()) > 0 {
-		keys = append(keys, "[ ] scroll · { } next box")
-	}
-	if m.changed {
-		keys = append(keys, "o re-open")
-	}
-	status := dim.Render(strings.Join(append(keys, "q quit"), " · "))
-	if m.status != "" {
-		status = m.status + dim.Render("  ·  ") + status
-	}
-	return lipgloss.JoinVertical(lipgloss.Left,
+	status, _ := m.footer()
+	v := lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Top,
 			m.pane(0, sw, h, "Sessions", srows, m.si),
 			m.pane(1, iw, h, "Items", irows, isel),
@@ -730,6 +836,10 @@ func (m model) View() string {
 		),
 		status,
 	)
+	if m.menu {
+		v = m.withOverlay(v)
+	}
+	return v
 }
 
 func (m model) pane(i, w, h int, title string, rows []string, selected int) string {

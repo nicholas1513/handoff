@@ -127,6 +127,29 @@ func TestDetailOrderAndTrustedSession(t *testing.T) {
 	}
 }
 
+func TestDetailShowsEditAsDiff(t *testing.T) {
+	_, m := setup(t)
+	dir := t.TempDir()
+	target, proposed := filepath.Join(dir, "settings.json"), filepath.Join(dir, "new.json")
+	os.WriteFile(target, []byte("keep\nold line\n"), 0o600)
+	os.WriteFile(proposed, []byte("keep\nnew line\n"), 0o600)
+	m = withItem(t, m, queue.Item{Description: "x", Edit: target, Argv: queue.EditArgv(target)},
+		map[string]string{queue.EditFile: proposed}, 120)
+	out := ansi.Strip(m.detail())
+	i, j := strings.Index(out, "── Diff"), strings.Index(out, "── Why")
+	if i < 0 || j < i {
+		t.Fatalf("Diff section missing or after Why:\n%s", out)
+	}
+	for _, want := range []string{"-old line", "+new line"} {
+		if !strings.Contains(out[i:j], want) {
+			t.Errorf("diff missing %q:\n%s", want, out[i:j])
+		}
+	}
+	if strings.Contains(out, "── 📎 proposed") {
+		t.Error("proposed file shown whole as well as in the diff")
+	}
+}
+
 func TestDetailWarningsAboveCommand(t *testing.T) {
 	_, m := setup(t)
 	m = withItem(t, m, queue.Item{Description: "x", Argv: []string{"bash", "-c", "echo"}}, nil, 120)
