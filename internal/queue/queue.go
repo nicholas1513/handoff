@@ -18,8 +18,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +53,7 @@ type Item struct {
 	Reason      string    `json:"reason,omitempty"`
 	Argv        []string  `json:"argv"`
 	Files       []string  `json:"files,omitempty"`
+	Edit        string    `json:"edit,omitempty"` // absolute path an edit item replaces with its EditFile attachment
 	Cwd         string    `json:"cwd"`
 	SessionID   string    `json:"session_id"`
 	Created     time.Time `json:"created"`
@@ -73,6 +76,8 @@ type Reviewed struct {
 	SnapDir string
 	// FileHashes are plain SHA-256s of the exact bytes Hash covers, in order: item.json, then attachments.
 	FileHashes []FileHash
+	// For edit items: the target's SHA-256 when the diff was taken ("" if it didn't exist), and the diff.
+	BaseSHA256, Diff string
 }
 
 type FileHash struct{ Name, Path, SHA256 string }
@@ -85,9 +90,23 @@ func (q *Queue) resultPath(it Item) string {
 	return filepath.Join(q.Root, "sessions", it.SessionID, "results", it.ID+".json")
 }
 
+// EditFile is the attachment holding an edit item's proposed contents.
+const EditFile = "proposed"
+
+// EditArgv is the only command an edit item may run, so the diff shown is the file written.
+func EditArgv(target string) []string { return []string{"/bin/cp", "{file:" + EditFile + "}", target} }
+
 func validate(it Item) error {
 	if len(it.Argv) == 0 || it.Argv[0] == "" {
 		return errors.New("empty argv")
+	}
+	if it.Edit != "" {
+		if !filepath.IsAbs(it.Edit) {
+			return fmt.Errorf("edit target %q is not absolute", it.Edit)
+		}
+		if !slices.Equal(it.Argv, EditArgv(it.Edit)) || !slices.Equal(it.Files, []string{EditFile}) {
+			return errors.New("edit item's argv or attachments don't match its target")
+		}
 	}
 	if !safeName.MatchString(it.SessionID) {
 		return fmt.Errorf("bad session id %q", it.SessionID)
@@ -238,10 +257,53 @@ func (q *Queue) Snapshot(id string) (Reviewed, error) {
 		}
 		fh = append(fh, FileHash{name, p, sum(files[name])})
 	}
-	return Reviewed{Item: it, Hash: hash, SnapDir: snap, FileHashes: fh}, nil
+	r := Reviewed{Item: it, Hash: hash, SnapDir: snap, FileHashes: fh}
+	if it.Edit != "" {
+		if r.BaseSHA256, r.Diff, err = editDiff(it.Edit, filepath.Join(snap, EditFile), filepath.Join(snap, EditBase)); err != nil {
+			return Reviewed{}, err
+		}
+	}
+	return r, nil
 }
 
-// Verify re-reads the live item and returns ErrModified if anything differs from the review.
+// EditBase is the snapshot's copy of an edit target as it was diffed (empty if it didn't exist). It
+// starts with "." so no attachment can have its name.
+const EditBase = ".base"
+
+// readTarget is the target's bytes and SHA-256, or nil and "" if it doesn't exist.
+func readTarget(target string) ([]byte, string, error) {
+	b, err := os.ReadFile(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	s := sha256.Sum256(b)
+	return b, hex.EncodeToString(s[:]), nil
+}
+
+// editDiff copies the target to base and diffs that copy against the proposed file, so the hash, the
+// diff and the context the viewer reveals all come from one read. Verify re-hashes the live target
+// before a run, so one that changed since is refused rather than overwritten.
+func editDiff(target, proposed, base string) (sum, diff string, err error) {
+	b, sum, err := readTarget(target)
+	if err != nil {
+		return "", "", err
+	}
+	if err = os.WriteFile(base, b, 0o600); err != nil {
+		return "", "", err
+	}
+	out, err := exec.Command("diff", "-u", "-L", "current "+target, "-L", "proposed", base, proposed).Output()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 { // 1 means the files differ
+		err = nil
+	}
+	return sum, string(out), err
+}
+
+// Verify re-reads the live item and returns ErrModified if anything differs from the review,
+// including an edit target that changed since its diff was taken.
 func (q *Queue) Verify(r Reviewed) error {
 	_, _, hash, _, err := q.read(r.Item.ID)
 	if err != nil {
@@ -249,6 +311,11 @@ func (q *Queue) Verify(r Reviewed) error {
 	}
 	if hash != r.Hash {
 		return ErrModified
+	}
+	if r.Item.Edit != "" {
+		if _, base, err := readTarget(r.Item.Edit); err != nil || base != r.BaseSHA256 {
+			return fmt.Errorf("%w: %s changed since the diff was taken", ErrModified, r.Item.Edit)
+		}
 	}
 	return nil
 }

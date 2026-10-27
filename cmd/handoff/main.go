@@ -23,6 +23,7 @@ import (
 const usage = `usage:
   handoff                                   open the viewer
   handoff add --desc "…" [--reason r] [--file name=path …] [--wait] -- <argv…>
+  handoff add --desc "…" [--reason r] [--wait] --edit target=proposed   replace target; shown as a diff
   handoff revoke <id>…                      withdraw this session's not-yet-run items
   handoff hook session-start|prompt         (called by the Claude Code plugin)
 `
@@ -144,10 +145,12 @@ func add(q *queue.Queue, args []string) int {
 		files[name] = path
 		return nil
 	})
+	edit := fs.String("edit", "", "target=proposed: replace target with the proposed file's contents")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *desc == "" || fs.NArg() == 0 {
+	// An edit item takes no argv and no other attachments: its command is fixed by its target.
+	if *desc == "" || (*edit == "") == (fs.NArg() == 0) || (*edit != "" && len(files) > 0) {
 		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
@@ -160,7 +163,20 @@ func add(q *queue.Queue, args []string) int {
 		fmt.Fprintln(os.Stderr, "handoff:", err)
 		return 1
 	}
-	it, err := q.Add(queue.Item{Description: *desc, Reason: *reason, Argv: fs.Args(), Cwd: cwd, SessionID: sid}, files)
+	item := queue.Item{Description: *desc, Reason: *reason, Argv: fs.Args(), Cwd: cwd, SessionID: sid}
+	if *edit != "" {
+		target, proposed, ok := strings.Cut(*edit, "=")
+		if !ok || target == "" || proposed == "" {
+			fmt.Fprintln(os.Stderr, "handoff: --edit wants target=proposed")
+			return 2
+		}
+		if item.Edit, err = filepath.Abs(target); err != nil {
+			fmt.Fprintln(os.Stderr, "handoff:", err)
+			return 1
+		}
+		item.Argv, files = queue.EditArgv(item.Edit), map[string]string{queue.EditFile: proposed}
+	}
+	it, err := q.Add(item, files)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "handoff:", err)
 		return 1

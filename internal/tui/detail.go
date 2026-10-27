@@ -172,12 +172,27 @@ type box struct {
 	lines    []string // one per drawn line, wrapped to the inner width when framed
 	framed   bool
 	cap, top int
+	meta     []dline // diff box only: the logical row each drawn line came from
 }
 
 const (
 	resultBox = "result"
 	promptBox = "prompt"
+	diffBox   = "diff"
 )
+
+// diffColor colours a unified-diff line by its first character: added green, removed red, hunk cyan.
+func diffColor(l string) lipgloss.TerminalColor {
+	switch {
+	case strings.HasPrefix(l, "+"):
+		return lipgloss.Color("2")
+	case strings.HasPrefix(l, "-"):
+		return lipgloss.Color("1")
+	case strings.HasPrefix(l, "@@"):
+		return lipgloss.Color("6")
+	}
+	return lipgloss.NoColor{}
+}
 
 func (m model) detail() string {
 	var b strings.Builder
@@ -202,7 +217,7 @@ var boxBg = lipgloss.AdaptiveColor{Light: "#e8e8ef", Dark: "#2a2e3f"}
 func (m model) mkBox(id string, wrap func(w int) []string, cap int) box {
 	_, _, dw := columns(m.w)
 	if l := wrap(max(1, dw-6)); len(l) > cap {
-		return box{id, l, true, cap, max(0, min(m.boxTop[id], len(l)-cap))}
+		return box{id: id, lines: l, framed: true, cap: cap, top: max(0, min(m.boxTop[id], len(l)-cap))}
 	}
 	return box{id: id, lines: wrap(dw - 2), cap: cap}
 }
@@ -212,7 +227,11 @@ func (m model) render(b box, sel bool) string {
 	if !b.framed {
 		return strings.Join(b.lines, "\n") + "\n"
 	}
-	return m.frame(b.lines[b.top:b.top+b.cap], b.top, len(b.lines), sel) + "\n"
+	var colors []lipgloss.TerminalColor
+	for _, d := range b.meta[min(b.top, len(b.meta)):min(b.top+b.cap, len(b.meta))] {
+		colors = append(colors, d.color)
+	}
+	return m.frame(b.lines[b.top:b.top+b.cap], b.top, len(b.lines), sel, colors) + "\n"
 }
 
 // placed is a framed box and its first content row in the wrapped detail.
@@ -275,8 +294,8 @@ func (m *model) reveal(id string) {
 }
 
 // with returns a copy of mp with k set: models are values, so a shared map would leak state between copies.
-func with[V any](mp map[string]V, k string, v V) map[string]V {
-	c := make(map[string]V, len(mp)+1)
+func with[K comparable, V any](mp map[K]V, k K, v V) map[K]V {
+	c := make(map[K]V, len(mp)+1)
 	maps.Copy(c, mp)
 	c[k] = v
 	return c
@@ -316,7 +335,8 @@ func scrollbar(cap, total, top int) []string {
 
 // frame draws the visible slice of a long result as a scrollable panel: rounded border, scrollbar in the last
 // inner column, and the line range in the bottom border. Its width is dw-2, the detail wrap width.
-func (m model) frame(rows []string, top, total int, sel bool) string {
+// colors, when given, is each row's foreground (the diff box's, so wrapped continuations match their line).
+func (m model) frame(rows []string, top, total int, sel bool, colors []lipgloss.TerminalColor) string {
 	_, _, dw := columns(m.w)
 	outer, inner := dw-2, dw-6
 	edge := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(boxBg)
@@ -333,6 +353,9 @@ func (m model) frame(rows []string, top, total int, sel bool) string {
 			st = st.Bold(true)
 		}
 		l = ansi.Strip(l)
+		if i < len(colors) {
+			st = st.Foreground(colors[i])
+		}
 		bs := edge
 		if bar[i] == "┃" {
 			bs = thumb
@@ -354,16 +377,16 @@ func (m *model) scrollBox(id string, d int) {
 }
 
 // boxAt reports which framed box has screen row y as one of its content rows (body line k is at buttonY+1+k-scroll).
-// Border rows don't count.
-func (m model) boxAt(y int) (string, bool) {
+// Border rows don't count. line is the box line drawn on that row.
+func (m model) boxAt(y int) (id string, line int, ok bool) {
 	top := m.bodyTop(len(m.detailLines()))
 	for _, b := range m.boxes() {
 		first := buttonY + 1 + b.first - top
 		if y > buttonY && y >= first && y < first+b.cap && y <= max(5, m.h-3) {
-			return b.id, true
+			return b.id, b.top + y - first, true
 		}
 	}
-	return "", false
+	return "", 0, false
 }
 
 // bodyTop is the first detail line drawn: m.scroll, kept inside the n wrapped lines. View and boxAt share it.
@@ -417,6 +440,9 @@ func (m model) detailSegs() []seg {
 
 	var atts []box
 	for _, name := range it.Files {
+		if it.Edit != "" { // its contents are shown as the Diff instead
+			continue
+		}
 		data, err := os.ReadFile(filepath.Join(m.reviewed.SnapDir, name))
 		if err != nil {
 			data = []byte(err.Error())
@@ -496,6 +522,18 @@ func (m model) detailSegs() []seg {
 	p("\n%s", heading("Command"))
 	for _, l := range commandLines(it.Argv, sizes) {
 		p("%s", l)
+	}
+
+	if it.Edit != "" {
+		p("\n%s", heading("Diff"))
+		if m.reviewed.Diff == "" {
+			p("%s", dim.Render("no changes: the proposed file matches "+sanitize(it.Edit)))
+		} else {
+			if m.reviewed.BaseSHA256 == "" {
+				p("%s", warn.Render("new file: "+sanitize(it.Edit)+" doesn't exist yet"))
+			}
+			addBox(m.diffBox())
+		}
 	}
 
 	p("\n%s", heading("Why"))

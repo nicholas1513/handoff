@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -105,10 +106,30 @@ func TestAddErrors(t *testing.T) {
 		"bad --file":   {sid, []string{"add", "--desc", "d", "--file", "nopath", "--", "true"}, 2},
 		"unsafe file":  {sid, []string{"add", "--desc", "d", "--file", "../x=/etc/hosts", "--", "true"}, 1},
 		"unknown verb": {sid, []string{"bogus"}, 2},
+		"edit + argv":  {sid, []string{"add", "--desc", "d", "--edit", "/x=/y", "--", "true"}, 2},
+		"edit + file":  {sid, []string{"add", "--desc", "d", "--edit", "/x=/y", "--file", "a=/y"}, 2},
+		"bad --edit":   {sid, []string{"add", "--desc", "d", "--edit", "/x"}, 2},
 	} {
 		if code := exitCode(handoff(t, root, c.sid, "", c.args...).Run()); code != c.want {
 			t.Errorf("%s: exit %d, want %d", name, code, c.want)
 		}
+	}
+}
+
+func TestAddEditResolvesTarget(t *testing.T) {
+	root := t.TempDir()
+	dir, _ := filepath.EvalSymlinks(t.TempDir()) // macOS /tmp is a symlink; Getwd returns the real path
+	os.WriteFile(filepath.Join(dir, "new"), []byte("x"), 0o600)
+	cmd := handoff(t, root, sid, "", "add", "--desc", "d", "--edit", "settings.json=new")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := (&queue.Queue{Root: root}).Load(strings.TrimSpace(string(out)))
+	target := filepath.Join(dir, "settings.json")
+	if err != nil || it.Edit != target || !slices.Equal(it.Argv, queue.EditArgv(target)) {
+		t.Fatalf("item = %+v, %v", it, err)
 	}
 }
 

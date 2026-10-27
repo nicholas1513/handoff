@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -283,5 +284,57 @@ func TestRecordPID(t *testing.T) {
 	}
 	if pid, ok := q.ClaimPID(it); !ok || pid != 1234 {
 		t.Fatalf("ClaimPID = %d %v", pid, ok)
+	}
+}
+
+func TestEditItem(t *testing.T) {
+	q := &Queue{Root: t.TempDir()}
+	dir := t.TempDir()
+	target, proposed := filepath.Join(dir, "settings.json"), filepath.Join(dir, "new.json")
+	os.WriteFile(target, []byte("a\nb\n"), 0o600)
+	os.WriteFile(proposed, []byte("a\nc\n"), 0o600)
+	edit := Item{Edit: target, Argv: EditArgv(target), Cwd: dir, SessionID: sid}
+
+	// The command must be the one EditArgv fixes for the target, so the diff shown is the file written.
+	for _, bad := range [][]string{EditArgv(filepath.Join(dir, "other")), {"/bin/rm", target}} {
+		it := edit
+		it.Argv = bad
+		if _, err := q.Add(it, map[string]string{EditFile: proposed}); err == nil {
+			t.Errorf("accepted argv %q for target %q", bad, target)
+		}
+	}
+	rel := edit
+	rel.Edit, rel.Argv = "settings.json", EditArgv("settings.json")
+	if _, err := q.Add(rel, map[string]string{EditFile: proposed}); err == nil {
+		t.Error("accepted a relative target")
+	}
+
+	it, err := q.Add(edit, map[string]string{EditFile: proposed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := q.Snapshot(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--- current " + target, "+++ proposed", "-b\n", "+c\n"} {
+		if !strings.Contains(r.Diff, want) {
+			t.Errorf("diff missing %q:\n%s", want, r.Diff)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(r.SnapDir, EditBase)); string(b) != "a\nb\n" {
+		t.Fatalf("snapshot base = %q, want the target as diffed", b)
+	}
+	if err := q.Verify(r); err != nil {
+		t.Fatalf("unchanged target failed verify: %v", err)
+	}
+	os.WriteFile(target, []byte("a\nb\nx\n"), 0o600)
+	if err := q.Verify(r); !errors.Is(err, ErrModified) {
+		t.Fatalf("target changed after review: Verify = %v, want ErrModified", err)
+	}
+
+	os.Remove(target)
+	if r, err = q.Snapshot(it.ID); err != nil || r.BaseSHA256 != "" || !strings.Contains(r.Diff, "+c\n") {
+		t.Fatalf("new-file snapshot = %+v, %v", r, err)
 	}
 }

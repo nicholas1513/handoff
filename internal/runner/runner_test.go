@@ -227,6 +227,44 @@ func TestCancelStaleWithoutPID(t *testing.T) {
 	}
 }
 
+func TestEditRunsOnlyAgainstReviewedTarget(t *testing.T) {
+	stageEdit := func(target string) (*queue.Queue, queue.Reviewed) {
+		q := &queue.Queue{Root: t.TempDir()}
+		proposed := filepath.Join(t.TempDir(), "new")
+		os.WriteFile(proposed, []byte("new\n"), 0o600)
+		it, err := q.Add(queue.Item{Edit: target, Argv: queue.EditArgv(target), Cwd: t.TempDir(), SessionID: sid},
+			map[string]string{queue.EditFile: proposed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := q.Snapshot(it.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return q, r
+	}
+	target := filepath.Join(t.TempDir(), "f")
+	os.WriteFile(target, []byte("old\n"), 0o600)
+
+	q, r := stageEdit(target)
+	if res, err := Run(context.Background(), q, r, time.Now()); err != nil || res.State != queue.Succeeded {
+		t.Fatalf("run = %+v, %v", res, err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "new\n" {
+		t.Fatalf("target = %q", b)
+	}
+
+	os.WriteFile(target, []byte("old\n"), 0o600)
+	q, r = stageEdit(target)
+	os.WriteFile(target, []byte("someone else's edit\n"), 0o600)
+	if res, _ := Run(context.Background(), q, r, time.Now()); res.State != queue.Modified {
+		t.Fatalf("target changed after review, state = %s", res.State)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "someone else's edit\n" {
+		t.Fatalf("overwrote a target that changed after review: %q", b)
+	}
+}
+
 func TestCancelStaleOnlyForRunning(t *testing.T) {
 	q, r := stage(t, "/usr/bin/true")
 	if err := CancelStale(q, r.Item, time.Now()); err == nil {
