@@ -93,9 +93,10 @@ type model struct {
 	boxSel   string         // selected box; "" or an unframed id means the first framed box
 	diff     fileDiff       // the reviewed edit item's diff, parsed at open
 	diffExp  map[int][2]int // context revealed per gap between hunks; copied on write
-	diffX    int            // diff pan offset when wrap is off
+	boxX     map[string]int // pan offset per unwrapped box id; copied on write
 	settings viewerSettings
 	menu     bool // the settings overlay is open
+	menuSel  int  // its selected row in settingRows
 	status   string
 	w, h     int
 	titles   titleCache
@@ -230,7 +231,7 @@ func (m *model) open() {
 	}
 	r, err := m.q.Snapshot(it.ID)
 	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll = &r, err, false, false, false, 0
-	m.boxTop, m.boxSel, m.diff, m.diffExp, m.diffX = nil, "", fileDiff{}, nil, 0
+	m.boxTop, m.boxSel, m.diff, m.diffExp, m.boxX = nil, "", fileDiff{}, nil, nil
 	if err != nil {
 		m.reviewed = nil
 	} else if r.Item.Edit != "" {
@@ -248,17 +249,38 @@ func (m *model) expandDiff(a *expand) {
 	}
 }
 
-// panDiff moves the unwrapped diff sideways, kept within its widest line.
-func (m *model) panDiff(d int) {
-	if _, ok := m.box(diffBox); ok && !m.settings.DiffWrap {
-		_, _, dw := columns(m.w)
-		m.diffX = max(0, min(m.diffX+d, m.diffWidest()-(dw-6)))
+// panBox moves an unwrapped box sideways by d cells, kept within its widest line.
+func (m *model) panBox(id string, d int) {
+	b, ok := m.box(id)
+	if !ok || !b.pan {
+		return
 	}
+	m.boxX = with(m.boxX, id, max(0, b.x+d))
+	b, _ = m.box(id)
+	m.boxX = with(m.boxX, id, b.x) // as clamped, so panning back responds at once
 }
 
-func (m *model) toggleWrap() {
-	m.settings.DiffWrap = !m.settings.DiffWrap
-	m.diffX = 0
+// panTarget is the box < > pan: the selected box if it pans, else the first that does, else "".
+func (m model) panTarget() string {
+	bs, sel := m.boxes(), m.selBox()
+	for _, b := range bs {
+		if b.id == sel && b.pan {
+			return sel
+		}
+	}
+	for _, b := range bs {
+		if b.pan {
+			return b.id
+		}
+	}
+	return ""
+}
+
+// toggleSetting flips settingRows[i] and saves.
+func (m *model) toggleSetting(i int) {
+	p := settingRows[i].on(&m.settings)
+	*p = !*p
+	m.boxX = nil
 	if err := saveSettings(m.q.Root, m.settings); err != nil {
 		m.status = "settings: " + err.Error()
 	}
@@ -557,7 +579,11 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 	if m.menu { // the overlay takes every key while open
 		switch k {
 		case " ", "enter":
-			m.toggleWrap()
+			m.toggleSetting(m.menuSel)
+		case "up", "k":
+			m.menuSel = max(0, m.menuSel-1)
+		case "down", "j":
+			m.menuSel = min(len(settingRows)-1, m.menuSel+1)
 		case "esc", "s", "q":
 			m.menu = false
 		}
@@ -631,7 +657,7 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		}
 	case "<", ">":
 		_, _, dw := columns(m.w)
-		m.panDiff(map[string]int{"<": -1, ">": 1}[k] * max(1, (dw-6)/2))
+		m.panBox(m.panTarget(), map[string]int{"<": -1, ">": 1}[k]*max(1, (dw-6)/2))
 	}
 	return m, nil
 }
@@ -652,9 +678,9 @@ func (m model) footer() (string, int) {
 	}
 	if _, ok := m.box(diffBox); ok {
 		keys = append(keys, "+ more context")
-		if !m.settings.DiffWrap {
-			keys = append(keys, "< > pan")
-		}
+	}
+	if m.panTarget() != "" {
+		keys = append(keys, "< > pan")
 	}
 	if m.changed {
 		keys = append(keys, "o re-open")
@@ -684,8 +710,9 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if press {
 			ol, ox, oy := m.overlay()
 			inside := msg.X >= ox && msg.X < ox+lipgloss.Width(ol[0]) && msg.Y >= oy && msg.Y < oy+len(ol)
-			if msg.Y == oy+settingsRow && inside {
-				m.toggleWrap()
+			if i := msg.Y - oy - settingsRow; inside && i >= 0 && i < len(settingRows) {
+				m.menuSel = i
+				m.toggleSetting(i)
 			} else if !inside {
 				m.menu = false
 			}
@@ -710,8 +737,8 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.move(d)
 		}
 	case msg.Button == tea.MouseButtonWheelLeft || msg.Button == tea.MouseButtonWheelRight:
-		if id, _, ok := m.boxAt(msg.Y); pane == 2 && ok && id == diffBox {
-			m.panDiff(map[bool]int{true: -4, false: 4}[msg.Button == tea.MouseButtonWheelLeft])
+		if id, _, ok := m.boxAt(msg.Y); pane == 2 && ok {
+			m.panBox(id, map[bool]int{true: -4, false: 4}[msg.Button == tea.MouseButtonWheelLeft])
 		}
 	case !press:
 	case msg.Y == m.statusY():
