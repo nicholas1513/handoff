@@ -173,6 +173,8 @@ type box struct {
 	framed   bool
 	cap, top int
 	meta     []dline // diff box only: the logical row each drawn line came from
+	pan      bool    // unwrapped: lines are cut at column x and pan sideways
+	x        int
 }
 
 const (
@@ -411,6 +413,37 @@ func (m *model) clampScroll() {
 	m.scroll = max(0, min(m.scroll, len(m.detailLines())-m.bodyRows()))
 }
 
+// wrapText wraps txt to a box width, tabs as four spaces.
+func wrapText(txt string) func(int) []string {
+	return func(w int) []string {
+		return strings.Split(strings.TrimSuffix(ansi.Wrap(strings.ReplaceAll(txt, "\t", "    "), w, ""), "\n"), "\n")
+	}
+}
+
+// attBox is an attachment's box: the snapshot copy, JSON pretty-printed, sanitized. With attachment wrap off it is
+// always framed, so it can be selected and panned, and its lines are cut at the pan offset (see cutLines).
+func (m model) attBox(name string) box {
+	data, err := os.ReadFile(filepath.Join(m.reviewed.SnapDir, name))
+	if err != nil {
+		data = []byte(err.Error())
+	}
+	var pretty bytes.Buffer
+	if json.Indent(&pretty, data, "", "  ") == nil {
+		data = pretty.Bytes()
+	}
+	id, txt := "file:"+name, sanitize(string(data))
+	if m.settings.AttachmentWrap {
+		return m.mkBox(id, wrapText(txt), m.capPct(30))
+	}
+	_, _, dw := columns(m.w)
+	lines := strings.Split(strings.TrimSuffix(strings.ReplaceAll(txt, "\t", "    "), "\n"), "\n")
+	b := box{id: id, framed: true, pan: true}
+	b.lines, b.x = cutLines(lines, m.boxX[id], max(1, dw-6))
+	b.cap = max(1, min(len(b.lines), m.capPct(30)))
+	b.top = max(0, min(m.boxTop[id], len(b.lines)-b.cap))
+	return b
+}
+
 // detailSegs is the detail in order: text runs and the Result, prompt and attachment boxes.
 func (m model) detailSegs() []seg {
 	s := m.session()
@@ -432,26 +465,12 @@ func (m model) detailSegs() []seg {
 		segs = append(segs, seg{text: b.String()}, seg{box: &x})
 		b.Reset()
 	}
-	wrapText := func(txt string) func(int) []string {
-		return func(w int) []string {
-			return strings.Split(strings.TrimSuffix(ansi.Wrap(strings.ReplaceAll(txt, "\t", "    "), w, ""), "\n"), "\n")
-		}
-	}
-
 	var atts []box
 	for _, name := range it.Files {
 		if it.Edit != "" { // its contents are shown as the Diff instead
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(m.reviewed.SnapDir, name))
-		if err != nil {
-			data = []byte(err.Error())
-		}
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, data, "", "  ") == nil {
-			data = pretty.Bytes()
-		}
-		atts = append(atts, m.mkBox("file:"+name, wrapText(sanitize(string(data))), m.capPct(30)))
+		atts = append(atts, m.attBox(name))
 	}
 
 	state := m.q.State(it, time.Now())

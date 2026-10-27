@@ -67,8 +67,10 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   The diff sits in a scrolling box (half the window at most). Click a `[+] ↓` / `[+] ↑` row to reveal
   10 more unchanged lines below the hunk above / above the hunk below (`[+] ↕` reveals a small gap
   whole), or press `+` to widen every gap. `s` (or clicking `s settings` in the footer) opens
-  settings: diff word wrap on/off, saved in `~/.handoff/viewer.json`. With wrap off, `<` `>` or a
-  sideways scroll pans, and `‹` `›` mark lines that continue off-screen.
+  settings, saved in `~/.handoff/viewer.json`: diff word wrap and attachment word wrap, each on or
+  off on its own. An unwrapped box is framed and pans: `<` `>` move the selected one (or the first
+  that pans), a sideways scroll moves the one under the pointer, and `‹` `›` mark lines that
+  continue off-screen.
 - **You:** run `handoff` (or `! handoff` from the Claude prompt). Sessions | items | detail.
   Press `space` twice to run the selected item (any other key cancels), or click **Run** (then
   confirm). `r` is an alias for the first `space`. `x` or **Reject**, `o` re-open after a change,

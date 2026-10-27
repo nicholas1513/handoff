@@ -199,6 +199,58 @@ func TestDiffWrapOffCutsAndPans(t *testing.T) {
 	}
 }
 
+func TestAttachmentWrapIsSeparateFromDiffWrap(t *testing.T) {
+	_, m := setup(t)
+	long := "START" + strings.Repeat("y", 300) + "END"
+	att := filepath.Join(t.TempDir(), "notes.txt")
+	os.WriteFile(att, []byte("short\n"+long+"\n"), 0o600)
+	m = withItem(t, m, queue.Item{Description: "x", Argv: []string{"/bin/cat", "{file:notes.txt}"}},
+		map[string]string{"notes.txt": att}, 120)
+	_, _, dw := columns(m.w)
+	id := "file:notes.txt"
+
+	m.settings.DiffWrap = false // the diff setting must not touch attachments
+	if b, _ := m.box(id); b.pan || !strings.Contains(strings.Join(b.lines, ""), "END") {
+		t.Fatalf("attachment wrap on: pan %v, want the whole line wrapped into view", b.pan)
+	}
+
+	m.settings.DiffWrap, m.settings.AttachmentWrap = true, false
+	b, _ := m.box(id)
+	if !b.pan || !b.framed {
+		t.Fatalf("attachment wrap off: pan %v framed %v, want a framed, pannable box", b.pan, b.framed)
+	}
+	for _, l := range b.lines {
+		if ansi.StringWidth(l) > dw-6 {
+			t.Fatalf("line %q is wider than the box", l)
+		}
+	}
+	if l := b.lines[1]; !strings.HasPrefix(l, "START") || !strings.HasSuffix(l, "›") {
+		t.Fatalf("unpanned long line = %q", l)
+	}
+	if m.panTarget() != id {
+		t.Fatalf("pan target = %q, want the attachment", m.panTarget())
+	}
+	for i := 0; i < 20; i++ {
+		next, _ := m.key(">")
+		m = next.(model)
+	}
+	if b, _ := m.box(id); !strings.HasPrefix(b.lines[1], "‹") || !strings.HasSuffix(b.lines[1], "END") {
+		t.Fatalf("panned to the end: %q", b.lines[1])
+	}
+	next, _ := m.key("<") // clamped on the way out, so one step back moves at once
+	if b, _ := next.(model).box(id); strings.HasSuffix(b.lines[1], "END") {
+		t.Fatalf("one < after over-panning should move: %q", b.lines[1])
+	}
+}
+
+func TestOlderSettingsFileKeepsNewDefaults(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(settingsPath(root), []byte(`{"diff_wrap": false}`), 0o600)
+	if s, err := loadSettings(root); err != nil || s.DiffWrap || !s.AttachmentWrap {
+		t.Fatalf("settings = %+v, %v; want diff off as saved and attachment wrap at its default (on)", s, err)
+	}
+}
+
 func TestClickPlusRowExpands(t *testing.T) {
 	m, _ := editModel(t, 160, 60, twoChanges)
 	before := len(m.diff.rows(m.diffExp))
@@ -268,5 +320,27 @@ func TestSettingsOverlay(t *testing.T) {
 	m, _ = click(m, 0, 0)
 	if m.menu {
 		t.Fatal("a click outside should close the overlay")
+	}
+
+	// the second row is attachment wrap: ↓ then space, or a click on its row, flips only it
+	next, _ = m.key("s")
+	m = next.(model)
+	for _, k := range []string{"down", " "} {
+		next, _ = m.key(k)
+		m = next.(model)
+	}
+	if m.settings.AttachmentWrap || !m.settings.DiffWrap {
+		t.Fatalf("↓ space: diff %v attachment %v, want only attachment wrap off", m.settings.DiffWrap, m.settings.AttachmentWrap)
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "› Attachment word wrap") {
+		t.Fatal("the selected row should be marked")
+	}
+	_, ox, oy = m.overlay()
+	m, _ = click(m, ox+3, oy+settingsRow+1)
+	if !m.settings.AttachmentWrap || !m.settings.DiffWrap {
+		t.Fatalf("row click: diff %v attachment %v", m.settings.DiffWrap, m.settings.AttachmentWrap)
+	}
+	if s, _ := loadSettings(m.q.Root); !s.AttachmentWrap || !s.DiffWrap {
+		t.Fatalf("saved settings = %+v", s)
 	}
 }

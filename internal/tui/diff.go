@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -172,7 +173,7 @@ func applyExpand(exp map[int][2]int, a expand) map[int][2]int {
 
 // diffBox is the diff in an always-framed box capped at half the window, so it scrolls instead of growing the
 // pane. Each drawn line keeps its logical row in meta, so wrapped continuations keep their colour and clicks
-// land on the right row. With wrap off, lines are cut to the window at m.diffX, marked ‹ › where they go on.
+// land on the right row. With wrap off, lines are cut to the window at the box's pan offset (see cutLines).
 func (m model) diffBox() box {
 	_, _, dw := columns(m.w)
 	inner := max(1, dw-6)
@@ -188,18 +189,8 @@ func (m model) diffBox() box {
 		}
 	}
 	if !m.settings.DiffWrap {
-		x := max(0, min(m.diffX, m.diffWidest()-inner))
-		for i, l := range b.lines {
-			w := ansi.StringWidth(l)
-			l = ansi.Cut(l, x, x+inner)
-			if x > 0 && l != "" {
-				l = "‹" + ansi.TruncateLeft(l, 1, "")
-			}
-			if w > x+inner {
-				l = ansi.Truncate(l, inner-1, "") + "›"
-			}
-			b.lines[i] = l
-		}
+		b.lines, b.x = cutLines(b.lines, m.boxX[diffBox], inner)
+		b.pan = true
 	}
 	b.cap = max(1, min(len(b.lines), m.capPct(50)))
 	b.top = max(0, min(m.boxTop[diffBox], len(b.lines)-b.cap))
@@ -209,26 +200,50 @@ func (m model) diffBox() box {
 // shownDiff is a diff row as drawn: sanitized (the proposal is agent-written), tabs as four spaces.
 func shownDiff(s string) string { return strings.ReplaceAll(sanitize(s), "\t", "    ") }
 
-// diffWidest is the widest diff row as drawn unwrapped.
-func (m model) diffWidest() int {
-	w := 0
-	for _, r := range m.diff.rows(m.diffExp) {
-		w = max(w, ansi.StringWidth(shownDiff(r.text)))
+// cutLines shows unwrapped lines through a window inner cells wide starting at column x, which it clamps to the
+// widest line and returns. ‹ and › mark lines that go on past either edge, so a cut never hides text silently.
+func cutLines(lines []string, x, inner int) ([]string, int) {
+	widest := 0
+	for _, l := range lines {
+		widest = max(widest, ansi.StringWidth(l))
 	}
-	return w
+	x = max(0, min(x, widest-inner))
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		w := ansi.StringWidth(l)
+		l = ansi.Cut(l, x, x+inner)
+		if x > 0 && l != "" {
+			l = "‹" + ansi.TruncateLeft(l, 1, "")
+		}
+		if w > x+inner {
+			l = ansi.Truncate(l, inner-1, "") + "›"
+		}
+		out[i] = l
+	}
+	return out, x
 }
 
 // viewerSettings are the reviewer's choices, kept in <root>/viewer.json. The sandbox can write only
 // <root>/queue, so an agent can't change them.
 type viewerSettings struct {
-	DiffWrap bool `json:"diff_wrap"`
+	DiffWrap       bool `json:"diff_wrap"`
+	AttachmentWrap bool `json:"attachment_wrap"`
+}
+
+// settingRows are the overlay's toggles, in display order.
+var settingRows = []struct {
+	label string
+	on    func(*viewerSettings) *bool
+}{
+	{"Diff word wrap", func(s *viewerSettings) *bool { return &s.DiffWrap }},
+	{"Attachment word wrap", func(s *viewerSettings) *bool { return &s.AttachmentWrap }},
 }
 
 func settingsPath(root string) string { return filepath.Join(root, "viewer.json") }
 
 // loadSettings returns the defaults when there is no file yet, and the defaults plus the error for a bad one.
 func loadSettings(root string) (viewerSettings, error) {
-	s := viewerSettings{DiffWrap: true}
+	s := viewerSettings{DiffWrap: true, AttachmentWrap: true} // a field missing from an older file keeps its default
 	b, err := os.ReadFile(settingsPath(root))
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -250,22 +265,23 @@ func saveSettings(root string, s viewerSettings) error {
 	return err
 }
 
-// settingsRow is the overlay's toggle row, counted from the overlay's top border.
+// settingsRow is the overlay's first toggle row, counted from the overlay's top border; toggle i is on settingsRow+i.
 const settingsRow = 3
 
 // overlay is the settings menu as drawn, and where it sits (top-left cell) when centred in the window.
 func (m model) overlay() (lines []string, x, y int) {
-	state := "off"
-	if m.settings.DiffWrap {
-		state = "on"
+	rows := []string{section.Render("Settings"), ""}
+	for i, r := range settingRows {
+		state, mark := "[ off ]", "  "
+		if *r.on(&m.settings) {
+			state = "[ on ] "
+		}
+		if i == m.menuSel {
+			mark = "› "
+		}
+		rows = append(rows, mark+fmt.Sprintf("%-22s", r.label)+bold.Render(state))
 	}
-	body := strings.Join([]string{
-		section.Render("Settings"),
-		"",
-		"Diff word wrap   " + bold.Render("[ "+state+" ]"),
-		"",
-		dim.Render("space / click toggle · esc close"),
-	}, "\n")
+	body := strings.Join(append(rows, "", dim.Render("↑↓ select · space / click toggle · esc close")), "\n")
 	lines = strings.Split(focused.Padding(0, 1).Render(body), "\n")
 	w := lipgloss.Width(lines[0])
 	return lines, max(0, (m.w-w)/2), max(0, (m.h-len(lines))/2)
