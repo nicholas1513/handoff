@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -388,5 +390,71 @@ func TestAm(t *testing.T) {
 	// no cwd: the run starts in the viewer's directory, where a relative -C resolves, not at /
 	if repo, _, ok := Am(Item{Argv: []string{"git", "-C", "x", "am", "{file:c.patch}"}, Files: files}); !ok || repo != "x" {
 		t.Errorf("no cwd: repo %q, %v; want x", repo, ok)
+	}
+}
+
+// TestAmRepoRunsNothing: reading an am item's repository as the item is opened runs no program the repository names: a
+// partial clone whose HEAD is missing would fetch it with its promisor remote's upload-pack, as the user, before any
+// approval. And a repository that makes git wait (a FIFO for HEAD) holds the viewer up for amTimeout at most.
+func TestAmRepoRunsNothing(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	d := t.TempDir()
+	repo, marker := filepath.Join(d, "r"), filepath.Join(d, "ran")
+	git := func(args ...string) string {
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).Output()
+		if err != nil {
+			t.Fatalf("git %q: %v", args, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if err := exec.Command("git", "init", "-q", repo).Run(); err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range [][2]string{{"core.repositoryformatversion", "1"}, {"extensions.partialClone", "origin"},
+		{"remote.origin.promisor", "true"}, {"remote.origin.url", repo},
+		{"remote.origin.uploadpack", "touch '" + marker + "'; git-upload-pack"}} {
+		git("config", kv[0], kv[1])
+	}
+	head := filepath.Join(repo, ".git", git("symbolic-ref", "HEAD"))
+	os.MkdirAll(filepath.Dir(head), 0o700)
+	os.WriteFile(head, []byte(strings.Repeat("1", 40)+"\n"), 0o600)
+	patch := filepath.Join(d, "p")
+	os.WriteFile(patch, []byte("x"), 0o600)
+	q := &Queue{Root: t.TempDir()}
+	it, err := q.Add(Item{Argv: []string{"git", "-C", repo, "am", "{file:p}"}, Cwd: d, SessionID: sid},
+		map[string]string{"p": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := q.Snapshot(it.ID)
+	if q.Verify(r); err != nil || r.AmBase != "" {
+		t.Fatalf("snapshot %+v, %v", r, err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("opening or verifying the item ran the repository's upload-pack")
+	}
+
+	old := amTimeout
+	t.Cleanup(func() { amTimeout = old })
+	amTimeout = 100 * time.Millisecond
+	fifo := filepath.Join(repo, ".git", "HEAD")
+	os.Remove(fifo)
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error)
+	go func() { _, err := q.Snapshot(it.ID); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		if f, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			f.Close() // lets the git that waits on it go
+		}
+		t.Fatal("a FIFO for HEAD holds Snapshot up")
 	}
 }
