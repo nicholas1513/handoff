@@ -108,6 +108,7 @@ type model struct {
 
 	data    *detailData // what the detail shows from disk and the clock; see loadData
 	rowsGen int         // bumped whenever m.rows or any sessionRow's items/state/fin/nOut/title change
+	rc      *renderCache
 
 	now        func() time.Time
 	advancedAt time.Time
@@ -124,7 +125,7 @@ func Run(q *queue.Queue, home string) error {
 }
 
 func newModel(q *queue.Queue, home string) model {
-	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}, now: time.Now}
+	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}, now: time.Now, rc: newRenderCache()}
 	var err error
 	if m.settings, err = loadSettings(q.Root); err != nil {
 		m.status = "settings: " + err.Error()
