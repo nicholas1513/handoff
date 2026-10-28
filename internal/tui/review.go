@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ type amView struct {
 	bin        int     // binary files, whose contents the log doesn't show
 	rows       []dline // the log, coloured
 	made       string  // the commits as runner.AmLog reads them (queue.Reviewed.AmCommits)
+	drivers    string  // the repository's settings naming programs the run's git am may run (see runsProgram)
 	err        string  // why the build failed: git's own error, which the run would hit too
 }
 
@@ -246,7 +248,7 @@ func (v *amView) build(ctx context.Context, dir, patch string) error {
 		}
 		return out
 	}
-	cfg := run(v.repo, "config", "--list", "-z")
+	cfg := strings.Split(run(v.repo, "config", "--list", "--show-scope", "-z"), "\x00") // scope, then key and value
 	run("", "clone", "--quiet", "--shared", "--no-checkout", "--", v.repo, dir)
 	// Before any file is written: no filter (the user's own, such as git-lfs) runs on the agent's files, and the diff
 	// reads files by their bytes alone, where an attribute such as -diff or binary would hide a text change.
@@ -256,16 +258,21 @@ func (v *amView) build(ctx context.Context, dir, patch string) error {
 			err = os.WriteFile(filepath.Join(info, "attributes"), []byte("* -filter !diff\n"), 0o600)
 		}
 	}
-	for _, kv := range strings.Split(cfg, "\x00") {
-		k, val, found := strings.Cut(kv, "\n")
+	var drivers []string
+	for i := 0; i+1 < len(cfg); i += 2 {
+		k, val, found := strings.Cut(cfg[i+1], "\n")
 		if !found {
 			val = "true" // a key with no value
+		}
+		if (cfg[i] == "local" || cfg[i] == "worktree") && runsProgram.MatchString(k) {
+			drivers = append(drivers, k)
 		}
 		if s, _, _ := strings.Cut(k, "."); s == "am" || s == "mailinfo" || s == "i18n" || s == "apply" ||
 			k == "core.whitespace" {
 			run(dir, "config", "--add", k, val)
 		}
 	}
+	v.drivers = strings.Join(drivers, ", ")
 	run(dir, "checkout", "--quiet", "--detach", v.base)
 	if err != nil {
 		return err
@@ -312,6 +319,10 @@ func (v *amView) build(ctx context.Context, dir, patch string) error {
 	}
 	return amErr
 }
+
+// runsProgram matches a setting naming a program that git am runs on the patch's files, which the run can't turn off: a
+// filter, run on files whose attributes name it, or a merge driver, run where git am falls back on a three-way merge.
+var runsProgram = regexp.MustCompile(`^(filter\..+\.(clean|smudge|process)|merge\..+\.driver)$`)
 
 // git runs git in dir ("" for the viewer's own) with hooks, the file-system monitor, commit signing and lazy fetches
 // (which run a promisor remote's upload-pack) off, and returns its output or an error holding git's message. The

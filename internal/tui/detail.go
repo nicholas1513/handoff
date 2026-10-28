@@ -919,6 +919,9 @@ func (m model) detailSegs() []seg {
 		case v == nil:
 			p("%s", dim.Render("preparing review copy…"))
 		default:
+			if v.drivers != "" {
+				p("%s", warn.Render("⚠ the run's git am may run programs the repository's config names: "+sanitize(v.drivers)))
+			}
 			if v.sum != "" { // git's result: all of it, or the commits git am made before it stopped
 				sum := v.sum
 				if v.bin > 0 || v.err != "" {

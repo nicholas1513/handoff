@@ -297,6 +297,24 @@ func TestReviewCopyRunsNoHooks(t *testing.T) {
 	}
 }
 
+// TestReviewCopyWarnsOfDrivers: the run's git am may run the filter and merge drivers the repository's config names,
+// which the run can't turn off, so they are drawn as a warning; the user's own (git-lfs) are not.
+func TestReviewCopyWarnsOfDrivers(t *testing.T) {
+	needGit(t)
+	t.Setenv("GIT_CONFIG_GLOBAL", tempFile(t, "gitconfig", "[filter \"lfs\"]\n\tprocess = git-lfs filter-process\n"))
+	plain := mkRepo(t, map[string]string{"f": "hello\n"})
+	evil := mkRepo(t, map[string]string{"f": "hello\n"}, "filter.x.smudge=touch m", "merge.y.driver=touch m")
+	warning := "⚠ the run's git am may run programs the repository's config names: filter.x.smudge, merge.y.driver 1 commit"
+	for repo, want := range map[string]bool{plain: false, evil: true} {
+		_, m := setup(t)
+		m = built(amModel(t, m, repo, fixture(t, "rv-patchsec__plain"), 160, 60))
+		if d := strings.Join(strings.Fields(flatten(m.detail())), " "); strings.Contains(d, warning) != want ||
+			strings.Contains(d, "may run programs") != want {
+			t.Errorf("%s: want the warning %v:\n%s", repo, want, ansi.Strip(m.detail()))
+		}
+	}
+}
+
 func TestSweepRemovesFinishedItemsReviewCopies(t *testing.T) {
 	q, _ := setup(t)
 	items, _, _ := q.List()
