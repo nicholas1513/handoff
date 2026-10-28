@@ -61,6 +61,7 @@ type sessionRow struct {
 	invalid []string             // only on the "invalid" pseudo-session
 	nOut    int                  // items[:nOut] are outstanding; fixed at refresh so headers don't move between paint and click
 	fin     map[string]time.Time // finish time per completed item, snapshot at refresh
+	state   map[string]string    // state per item, snapshot at refresh: drawing reads no result files per frame
 }
 
 type tickMsg time.Time
@@ -172,7 +173,7 @@ func (m *model) refresh() {
 	}
 	m.rows = m.rows[:0]
 	for _, r := range rows {
-		r.nOut, r.fin = m.sortItems(r.items)
+		r.nOut, r.fin, r.state = m.sortItems(r.items)
 		m.rows = append(m.rows, *r)
 	}
 	if len(invalid) > 0 {
@@ -261,14 +262,15 @@ func (m *model) panBox(id string, d int) {
 }
 
 // panTarget is the box < > pan: the selected box if it pans, else the first that does, else "".
-func (m model) panTarget() string {
-	bs, sel := m.boxes(), m.selBox()
-	for _, b := range bs {
-		if b.id == sel && b.pan {
-			return sel
+func (m model) panTarget() string { return panIn(m.layout()) }
+
+func panIn(l layout) string {
+	for _, b := range l.boxes {
+		if b.id == l.sel && b.pan {
+			return l.sel
 		}
 	}
-	for _, b := range bs {
+	for _, b := range l.boxes {
 		if b.pan {
 			return b.id
 		}
@@ -316,13 +318,15 @@ func (m *model) finish(it queue.Item) time.Time {
 }
 
 // sortItems: outstanding by Created ascending, then completed by finish time descending; ties by ID.
-// Returns the outstanding count and the completed items' finish times.
-func (m *model) sortItems(items []queue.Item) (int, map[string]time.Time) {
+// Returns the outstanding count, the completed items' finish times and every item's state.
+func (m *model) sortItems(items []queue.Item) (int, map[string]time.Time, map[string]string) {
 	now := m.now()
 	out := map[string]bool{}
 	at := map[string]time.Time{}
+	st := map[string]string{}
 	for _, it := range items {
-		if out[it.ID] = outstanding(m.q.State(it, now)); out[it.ID] {
+		st[it.ID] = m.q.State(it, now)
+		if out[it.ID] = outstanding(st[it.ID]); out[it.ID] {
 			at[it.ID] = it.Created
 		} else {
 			at[it.ID] = m.finish(it)
@@ -344,7 +348,7 @@ func (m *model) sortItems(items []queue.Item) (int, map[string]time.Time) {
 			n++
 		}
 	}
-	return n, at
+	return n, at, st
 }
 
 // stamp is local time: 15:04 for today, else Jan 2 15:04.
@@ -387,7 +391,11 @@ func (m *model) itemPane(s *sessionRow, now time.Time) (rows []string, idx []int
 		if i >= n {
 			ts = s.fin[it.ID]
 		}
-		add(itemRow(it, m.q.State(it, now), stamp(ts, now)), i)
+		st := s.state[it.ID]
+		if i == m.ii { // the selected item live, so a run or reject shows at once
+			st = m.q.State(it, now)
+		}
+		add(itemRow(it, st, stamp(ts, now)), i)
 	}
 	for i, id := range s.invalid {
 		add("⚠ "+id, i)
@@ -665,7 +673,9 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 const settingsKey = "s settings"
 
 // footer is the status line, and the column its settings hint starts at, for the mouse.
-func (m model) footer() (string, int) {
+func (m model) footer() (string, int) { return m.footerOf(m.layout()) }
+
+func (m model) footerOf(l layout) (string, int) {
 	keys := []string{"↑↓ move", "tab/click pane"}
 	if m.focus > 0 && m.pending() {
 		keys = append(keys, "space space run", "x reject")
@@ -673,13 +683,13 @@ func (m model) footer() (string, int) {
 	if m.focus > 0 && m.cancelable() {
 		keys = append(keys, "c c cancel run")
 	}
-	if m.focus == 2 && len(m.boxes()) > 0 {
+	if m.focus == 2 && len(l.boxes) > 0 {
 		keys = append(keys, "[ ] scroll · { } next box")
 	}
-	if _, ok := m.box(diffBox); ok {
+	if _, ok := l.box(diffBox); ok {
 		keys = append(keys, "+ more context")
 	}
-	if m.panTarget() != "" {
+	if panIn(l) != "" {
 		keys = append(keys, "< > pan")
 	}
 	if m.changed {
@@ -823,7 +833,7 @@ func (m model) View() string {
 			title = m.titles.get(r.sess.TranscriptPath)
 		}
 		for _, it := range r.items {
-			if m.q.State(it, now) == queue.Pending {
+			if r.state[it.ID] == queue.Pending {
 				pending++
 			}
 		}
@@ -851,10 +861,11 @@ func (m model) View() string {
 			header = warn.Render(cancelArmedBtn)
 		}
 	}
-	body := m.detailLines()
+	l := m.layout()
+	body := m.linesOf(l)
 	body = body[m.bodyTop(len(body)):]
 
-	status, _ := m.footer()
+	status, _ := m.footerOf(l)
 	v := lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Top,
 			m.pane(0, sw, h, "Sessions", srows, m.si),

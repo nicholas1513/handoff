@@ -182,7 +182,7 @@ func (m model) diffBox() box {
 		t := shownDiff(r.text)
 		parts := []string{t}
 		if m.settings.DiffWrap {
-			parts = strings.Split(ansi.Wrap(t, inner, ""), "\n")
+			parts = wrapLines(t, inner)
 		}
 		for _, p := range parts {
 			b.lines, b.meta = append(b.lines, p), append(b.meta, r)
