@@ -578,8 +578,9 @@ func (m *model) cancel() {
 	m.refresh()
 }
 
+// reject acts, like every prompt, only when the screen shows the item as pending and the disk still says so.
 func (m *model) reject() {
-	if !m.pending() {
+	if !m.shownPending() || !m.pending() {
 		return
 	}
 	it := m.reviewed.Item

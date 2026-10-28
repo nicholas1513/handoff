@@ -256,6 +256,27 @@ func TestPromptsOnlyForWhatIsDrawn(t *testing.T) {
 	}
 }
 
+// TestRejectOnlyWhatIsDrawn: like the prompts, x and the [ Reject ] click act only on an item the screen shows as
+// pending, not on one drawn as revoked whose revoke was undone on disk since the last refresh.
+func TestRejectOnlyWhatIsDrawn(t *testing.T) {
+	q, m := setup(t)
+	sw, iw, _ := columns(m.w)
+	it := *m.item()
+	if err := q.Revoke(it, sid); err != nil {
+		t.Fatal(err)
+	}
+	m = tickM(m) // drawn as revoked
+	if err := os.Remove(filepath.Join(q.Root, "queue", it.ID, "revoked")); err != nil {
+		t.Fatal(err)
+	}
+	if press(m, "x"); q.State(it, time.Now()) != queue.Pending {
+		t.Error("x rejected an item drawn as revoked")
+	}
+	if click(m, sw+iw+rejectX+1, buttonY); q.State(it, time.Now()) != queue.Pending {
+		t.Error("a click on the button row rejected an item drawn as revoked")
+	}
+}
+
 func TestRejectAdvancesToOldestPending(t *testing.T) {
 	_, m := setup(t) // "second" (newest) is selected, "first" is older
 	m, _ = press(m, "x")
