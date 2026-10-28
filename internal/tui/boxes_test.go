@@ -250,5 +250,20 @@ func TestBoxStateResetsOnNewItem(t *testing.T) {
 	}
 }
 
+// TestWideGlyphsStayInsideTheBox: wrapping leaves some emoji runs wider than a box line; they are cut at the box's
+// edge instead of pushing the frame out.
+func TestWideGlyphsStayInsideTheBox(t *testing.T) {
+	q, m := setup(t)
+	it := addItem(t, q, queue.Item{Description: "wide", SessionID: sid}, nil)
+	finished(t, q, it, queue.Succeeded, strings.Repeat(strings.Repeat("😀👍🏽👨‍👩‍", 3)+"\n", 60))
+	m = resize(pick(t, tickM(m), "wide"), 120, 40)
+	rows := strings.Split(ansi.Strip(m.View()), "\n")
+	for i, l := range rows[:len(rows)-1] {
+		if w := ansi.StringWidth(l); w != 120 {
+			t.Fatalf("row %d is %d wide: %q", i, w, l)
+		}
+	}
+}
+
 // lastDrawn reports whether body.json's last line, the closing brace, is drawn inside its frame on screen.
 func lastDrawn(m model) bool { return strings.Contains(ansi.Strip(m.View()), "││ }") }
