@@ -430,3 +430,42 @@ func TestAmRefusedWithNoCommit(t *testing.T) {
 		t.Fatalf("committed %s", out)
 	}
 }
+
+// TestAmAppliesTheReviewedPatch: commits handed over as a format-patch attachment land as reviewed: messages, authors,
+// dates and tree as in the source.
+func TestAmAppliesTheReviewedPatch(t *testing.T) {
+	src, dst := filepath.Join(t.TempDir(), "src"), filepath.Join(t.TempDir(), "dst")
+	write := func(name, body string) { os.WriteFile(filepath.Join(src, name), []byte(body), 0o600) }
+	gitT(t, "init", "-q", src)
+	write("f.txt", "a\nb\n")
+	gitT(t, "-C", src, "add", ".")
+	gitT(t, "-C", src, "commit", "-qm", "base")
+	gitT(t, "clone", "-q", src, dst)
+	write("f.txt", "a\nB\n")
+	agent := []string{"--author", "Agent <a@x>", "--date", "2001-02-03T04:05:06Z"} // not the env's, so a lost author shows
+	gitT(t, append([]string{"-C", src, "commit", "-qam", "Change b", "-m", "- a bullet"}, agent...)...)
+	write("g.txt", "x\n")
+	gitT(t, "-C", src, "add", ".")
+	gitT(t, append([]string{"-C", src, "commit", "-qm", "Add g"}, agent...)...)
+	patch := filepath.Join(t.TempDir(), "commits.patch")
+	os.WriteFile(patch, []byte(gitT(t, "-C", src, "format-patch", "--stdout", "HEAD~2..HEAD")), 0o600)
+
+	q := &queue.Queue{Root: t.TempDir()}
+	it, err := q.Add(queue.Item{Argv: []string{"git", "-C", dst, "am", "{file:commits.patch}"}, Cwd: t.TempDir(), SessionID: sid},
+		map[string]string{"commits.patch": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := q.Snapshot(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := Run(context.Background(), q, r, time.Now()); err != nil || res.State != queue.Succeeded {
+		t.Fatalf("got %+v %v", res, err)
+	}
+	for _, args := range [][]string{{"log", "--format=%an <%ae> %ad%n%B", "-3"}, {"rev-parse", "HEAD^{tree}"}} {
+		if got, want := gitT(t, append([]string{"-C", dst}, args...)...), gitT(t, append([]string{"-C", src}, args...)...); got != want {
+			t.Errorf("git %s in the repo = %q, want %q as in the source", args, got, want)
+		}
+	}
+}

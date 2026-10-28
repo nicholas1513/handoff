@@ -71,6 +71,37 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   off on its own. An unwrapped box is framed and pans: `<` `>` move the selected one (or the first
   that pans), a sideways scroll moves the one under the pointer, and `‹` `›` mark lines that
   continue off-screen.
+- **Agent, commits:** commits made in a scratch clone are handed over as a patch: written with
+  `git format-patch --stdout <base>..HEAD`, attached with `--file commits.patch=<file>`, and staged
+  as exactly `git -C <repo> am {file:commits.patch}`. The viewer doesn't parse the mail. When you
+  open such an item it builds a **review copy** in `~/.handoff/review/<id>-<n>`: a fresh clone of the
+  repo at its current HEAD, in which `git am` applies the same reviewed copy of the patch the run
+  will apply, with the repo's hooks and config left out (only its `am.*`, `mailinfo.*`, `i18n.*`,
+  `apply.*` and `core.whitespace` settings are copied, since they change what `git am` does). It
+  then draws git's own log of what came out: a summary (commits, files, lines, and a warning for
+  binary files), each commit's author, message and diff, under diff word wrap like the edit diff.
+  If `git am` stops there, you see the commits it made before it stopped (the run makes them too),
+  git's error, which the run would hit too, and the raw patch. The item doesn't run until its
+  review copy is drawn. The repo and the HEAD it was reviewed on are pinned: if the repo moves on,
+  or another repo is put at its path, the item shows as changed and Run refuses with `modified`;
+  `o` reviews it again. A repo with no commit yet gets no review copy, and the run is refused (so is
+  every such item with git older than 2.44, which can't turn lazy fetches off). A
+  `git pull` or `git fetch` from a local path gets a warning instead: its changes aren't shown.
+- **Commit review setting:** `Commit review` in settings picks where those commits are reviewed:
+  in the viewer, or in **VS Code**. Left on auto it is VS Code when the `code` command is on PATH
+  (or, on macOS, the app is in `/Applications` or `~/Applications`), else the viewer; auto is
+  resolved at each start and only saved once you pick a value (picking the one auto would pick
+  makes it auto again). In VS Code mode the item shows the summary and an **Open in VS Code**
+  button (or `v`), which opens the review copy with its HEAD back on the reviewed base, so the
+  whole change sits staged in Source Control (the commits stay on its `reviewed` branch). VS Code
+  opens each review copy in Restricted Mode, where Source Control doesn't run, so you have to trust
+  that one folder to see the change. Trusting it lets VS Code and its extensions run code from the
+  repo and the agent's patch: tasks, workspace settings, linter and test configs. Trust only
+  that folder, `~/.handoff/review/<id>-<n>`, never `~/.handoff/review` itself (leave "trust the
+  parent folder" unticked), and if the patch may touch such files, look at the changed files in
+  the viewer first (`s` → Commit review) or review it there instead. VS Code trusts a folder by
+  its path, so every build of a review copy gets a new folder, which VS Code asks you to trust
+  again: after a changed patch, a moved HEAD, or a restart of the viewer.
 - **You:** run `handoff` (or `! handoff` from the Claude prompt). Sessions | items | detail.
   Press `space` twice to run the selected item (any other key cancels), or click **Run** (then
   confirm). `r` is an alias for the first `space`. `x` or **Reject**, `o` re-open after a change,
@@ -88,6 +119,7 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 | Agent forges which prompt or session asked for it | Hooks run outside the sandbox and write `~/.handoff/sessions/`, which the sandbox can't. The viewer reads provenance from there and marks sessions with no hook record **unverified**. |
 | Shell injection | argv is executed directly, never through a shell. Interpreters (`bash -c`, `python -c`, `env`, `xargs`, …) are flagged. |
 | Item or attachment changed after review | The viewer hashes what it showed and copies attachments to `~/.handoff/snap/`. Run re-verifies the hash, refuses with `modified` if it changed, and passes the snapshot paths, not the live files. |
+| Handed-over commits drawn differently from what `git am` applies | The viewer doesn't parse the patch: it draws git's own result of `git am` on the reviewed copy, in a review copy of the repo with no hooks and none of its config but `am.*`, `mailinfo.*`, `i18n.*`, `apply.*` and `core.whitespace`, overriding attributes and submodule settings that hide a change from the diff. Run refuses with `modified` if the repo's HEAD moved since or another repo is at its path. |
 | Edit diff shows one file but writes another | An edit item's argv must be exactly `/bin/cp {file:proposed} <target>` for its own absolute target, or it fails to load. Run also refuses if the target's hash differs from when the diff was taken. |
 | Run twice / run after reject | A claim file is created exclusively before running or rejecting. |
 | Terminal tricks in displayed text | Control characters, ANSI escapes and invisible/bidi formatting characters are shown escaped. |
@@ -108,6 +140,7 @@ real prompt and directory, so a mismatch is visible but not blocked.
   sessions/<sid>/prompts/<ts>.json          UserPromptSubmit hook, newest 20 kept
   sessions/<sid>/results/<id>.json|.claim   viewer (.claim holds the run's pid once started)
   snap/<id>/<name>                          viewer: reviewed attachments
+  review/<id>-<n>/                          viewer: review copies of git am items, a new one per build, removed at startup once finished
   hook.log                                  hooks: one line per call (no prompt text)
 ```
 
