@@ -256,6 +256,36 @@ func TestPromptsOnlyForWhatIsDrawn(t *testing.T) {
 	}
 }
 
+// TestHiddenPromptRunsNothing: a prompt drawn while the item was pending is taken off the screen by a refresh that draws
+// it revoked. Answering where it was runs nothing, even once the revoke is undone on disk.
+func TestHiddenPromptRunsNothing(t *testing.T) {
+	for what, at := range map[string][2]int{"space space": {}, "two clicks on the button row": {runX, yesX}} {
+		q, m := setup(t)
+		sw, iw, _ := columns(m.w)
+		it := *m.item()
+		do := func(m model, x int) (model, tea.Cmd) {
+			if what == "space space" {
+				return press(m, " ")
+			}
+			return click(m, sw+iw+x+1, buttonY)
+		}
+		m, _ = do(m, at[0])
+		if v := m.View(); !strings.Contains(v, armedBtn) && !strings.Contains(v, confirmBtn) {
+			t.Fatalf("%s: no prompt drawn", what)
+		}
+		if err := q.Revoke(it, sid); err != nil {
+			t.Fatal(err)
+		}
+		m = tickM(m) // drawn as revoked, without the prompt
+		if err := os.Remove(filepath.Join(q.Root, "queue", it.ID, "revoked")); err != nil {
+			t.Fatal(err)
+		}
+		if _, cmd := do(m, at[1]); cmd != nil {
+			t.Errorf("%s ran an item drawn as revoked, answering a prompt no longer drawn", what)
+		}
+	}
+}
+
 // TestRejectOnlyWhatIsDrawn: like the prompts, x and the [ Reject ] click act only on an item the screen shows as
 // pending, not on one drawn as revoked whose revoke was undone on disk since the last refresh.
 func TestRejectOnlyWhatIsDrawn(t *testing.T) {
