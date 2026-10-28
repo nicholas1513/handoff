@@ -17,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/nicholas1513/handoff/internal/queue"
 	"github.com/nicholas1513/handoff/internal/rules"
@@ -221,7 +222,7 @@ var boxBg = lipgloss.AdaptiveColor{Light: "#e8e8ef", Dark: "#2a2e3f"}
 func (m model) mkBox(id string, wrap func(w int) []string, cap int) box {
 	_, _, dw := columns(m.w)
 	if l := wrap(max(1, dw-6)); len(l) > cap {
-		return box{id: id, lines: l, framed: true, cap: cap, top: max(0, min(m.boxTop[id], len(l)-cap))}
+		return m.atTop(box{id: id, lines: l, framed: true, cap: cap})
 	}
 	return box{id: id, lines: wrap(dw - 2), cap: cap}
 }
@@ -244,27 +245,97 @@ type placed struct {
 	first int
 }
 
-// layout is one build of the detail: its runs, the framed boxes in display order with where each sits in the
-// wrapped detail, and the selected one. Building it is most of a frame's cost (the wheel can send dozens of
-// events a second), so code that reads the detail more than once takes one layout and reuses it.
+// renderCache is the detail's derived state, held by pointer so every copy of the model shares it. An entry keeps
+// the inputs it was built from and is rebuilt when they differ, so nothing has to remember to invalidate it.
+type renderCache struct {
+	lay *detailLayout
+}
+
+func newRenderCache() *renderCache { return &renderCache{} }
+
+// look is what styled text depends on besides itself: the colour profile, which tests switch. (The background
+// lipgloss detects once; asking for it would query the terminal on the first frame.)
+type look termenv.Profile
+
+func lookNow() look { return look(lipgloss.ColorProfile()) }
+
+// layoutKey is what a detail layout is built from, besides the diffExp and boxX maps.
+type layoutKey struct {
+	data           *detailData
+	reviewed       *queue.Reviewed // m.diff is parsed with it
+	openErr, state string          // state: the item's as drawn, for its chip
+	changed        bool
+	w, h           int
+	home           string
+	settings       viewerSettings
+	look           look
+}
+
+// detailLayout is the detail built for one key: its runs, every body row, and the framed boxes. Box tops (m.boxTop)
+// and the selected box (m.boxSel) are applied when drawing, so scrolling or selecting a box reuses it.
+type detailLayout struct {
+	key     layoutKey
+	diffExp map[int][2]int
+	boxX    map[string]int
+	segs    []seg
+	boxes   []placed // framed, in display order, at top 0
+	rows    []string // every body row, wrapped and padded to dw-2; "" where a framed box draws its own
+}
+
+// detailLayout is the cached detail while the model's inputs are unchanged, else a new build of it.
+func (m model) detailLayout() *detailLayout {
+	k := layoutKey{data: m.data, reviewed: m.reviewed, state: m.drawnState(), changed: m.changed, w: m.w, h: m.h, home: m.home, settings: m.settings, look: lookNow()}
+	if m.openErr != nil {
+		k.openErr = m.openErr.Error()
+	}
+	if d := m.rc.lay; d != nil && d.key == k && maps.Equal(d.diffExp, m.diffExp) && maps.Equal(d.boxX, m.boxX) {
+		return d
+	}
+	d, c := &detailLayout{key: k, diffExp: m.diffExp, boxX: m.boxX}, m
+	c.boxTop = nil // built at top 0: tops are applied when drawing
+	d.segs = c.detailSegs()
+	for _, s := range d.segs {
+		switch {
+		case s.box == nil:
+			d.rows = append(d.rows, strings.Split(m.wrapDetail(strings.TrimSuffix(s.text, "\n")), "\n")...)
+		case s.box.framed:
+			d.boxes = append(d.boxes, placed{*s.box, len(d.rows) + 1})
+			d.rows = append(d.rows, make([]string, s.box.cap+2)...)
+		default:
+			d.rows = append(d.rows, strings.Split(m.wrapDetail(strings.Join(s.box.lines, "\n")), "\n")...)
+		}
+	}
+	m.rc.lay = d
+	return d
+}
+
+// atTop is b scrolled to m.boxTop[b.id], clamped to its lines.
+func (m model) atTop(b box) box {
+	b.top = max(0, min(m.boxTop[b.id], len(b.lines)-b.cap))
+	return b
+}
+
+// layout is the cached detail as drawn now: each box at its scroll position, and the selected one.
 type layout struct {
 	segs  []seg
 	boxes []placed
 	sel   string // m.boxSel while it is framed, else the first framed box, else ""
+	n     int    // body rows
 }
 
 func (m model) layout() (l layout) {
-	l.segs = m.detailSegs()
-	n := 0
-	for _, s := range l.segs {
-		if s.box == nil {
-			n += strings.Count(m.wrapDetail(strings.TrimSuffix(s.text, "\n")), "\n") + 1
-		} else if s.box.framed {
-			l.boxes = append(l.boxes, placed{*s.box, n + 1})
-			n += s.box.cap + 2
-		} else {
-			n += max(1, len(s.box.lines))
+	d := m.detailLayout()
+	l.n = len(d.rows)
+	for _, s := range d.segs {
+		if s.box != nil {
+			b := m.atTop(*s.box)
+			s.box = &b
 		}
+		l.segs = append(l.segs, s)
+	}
+	for _, b := range d.boxes {
+		b.box = m.atTop(b.box)
+		l.boxes = append(l.boxes, b)
 	}
 	for _, b := range l.boxes {
 		if l.sel == "" || b.id == m.boxSel {
@@ -394,7 +465,7 @@ func (m *model) scrollBox(id string, d int) {
 // Border rows don't count. line is the box line drawn on that row.
 func (m model) boxAt(y int) (id string, line int, ok bool) {
 	l := m.layout()
-	top := m.bodyTop(len(m.linesOf(l)))
+	top := m.bodyTop(l.n)
 	for _, b := range l.boxes {
 		first := buttonY + 1 + b.first - top
 		if y > buttonY && y >= first && y < first+b.cap && y <= max(5, m.h-3) {
@@ -413,7 +484,7 @@ func (m model) wrapDetail(s string) string {
 	return lipgloss.NewStyle().Width(dw - 2).Render(s)
 }
 
-// detailLines is the wrapped detail, one entry per drawn line. View, boxAt and clampScroll share it.
+// detailLines is the wrapped detail, one entry per drawn line.
 func (m model) detailLines() []string { return m.linesOf(m.layout()) }
 
 func (m model) linesOf(l layout) []string {
@@ -425,7 +496,7 @@ func (m model) bodyRows() int { return max(5, m.h-3) - 2 }
 
 // clampScroll keeps m.scroll within the detail.
 func (m *model) clampScroll() {
-	m.scroll = max(0, min(m.scroll, len(m.detailLines())-m.bodyRows()))
+	m.scroll = max(0, min(m.scroll, len(m.detailLayout().rows)-m.bodyRows()))
 }
 
 // wrapText wraps txt to a box width, tabs as four spaces.
@@ -500,8 +571,7 @@ func (m model) attBox(name string) box {
 	b := box{id: id, framed: true, pan: true}
 	b.lines, b.x = cutLines(lines, m.boxX[id], max(1, dw-6))
 	b.cap = max(1, min(len(b.lines), m.capPct(30)))
-	b.top = max(0, min(m.boxTop[id], len(b.lines)-b.cap))
-	return b
+	return m.atTop(b)
 }
 
 // detailData is everything the detail shows from disk and the clock. loadData reads it when an item opens (so at

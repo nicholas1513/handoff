@@ -193,8 +193,7 @@ func (m model) diffBox() box {
 		b.pan = true
 	}
 	b.cap = max(1, min(len(b.lines), m.capPct(50)))
-	b.top = max(0, min(m.boxTop[diffBox], len(b.lines)-b.cap))
-	return b
+	return m.atTop(b)
 }
 
 // shownDiff is a diff row as drawn: sanitized (the proposal is agent-written), tabs as four spaces.
