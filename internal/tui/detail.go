@@ -864,7 +864,7 @@ func (m model) detailSegs() []seg {
 	if m.home != "" && (cwd == m.home || strings.HasPrefix(cwd, m.home+"/")) {
 		cwd = "~" + strings.TrimPrefix(cwd, m.home)
 	}
-	why = append(why, d.badge.String(m.home), cwd)
+	why = append(why, sanitize(d.badge.String(m.home)), cwd) // its rule and file come from the agent's project
 	p("%s", dim.Render(strings.Join(why, " · ")))
 
 	for _, a := range atts {

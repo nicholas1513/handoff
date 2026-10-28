@@ -414,7 +414,7 @@ func (m *model) itemPane(s *sessionRow, now time.Time) (rows []string, idx []int
 		add(itemRow(it, m.shownState(s, it), stamp(ts, now)), i)
 	}
 	for i, id := range s.invalid {
-		add("⚠ "+id, i)
+		add("⚠ "+oneLine(id), i) // the raw directory name: a newline in it would add a screen row
 	}
 	return rows, idx
 }
@@ -818,8 +818,9 @@ func (m model) footerOf(l layout) (string, int) {
 	f := m.rc.foot.get(styleKey{plain, m.status, lookNow()}, func() footLine {
 		status, x := dim.Render(plain), ansi.StringWidth(plain[:strings.Index(plain, settingsKey)])
 		if m.status != "" {
-			status = m.status + dim.Render("  ·  ") + status
-			x += ansi.StringWidth(m.status + "  ·  ")
+			s := sanitize(m.status) // errors can quote agent-written text, such as an edit's target path
+			status = s + dim.Render("  ·  ") + status
+			x += ansi.StringWidth(s + "  ·  ")
 		}
 		return footLine{status, x}
 	})
