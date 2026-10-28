@@ -133,7 +133,7 @@ func TestDiffWrapKeepsLineColour(t *testing.T) {
 	sgr, _, _ := strings.Cut(lipgloss.NewStyle().Foreground(green).Render("x"), "x")
 	sgr = strings.TrimSuffix(sgr, "m") // the frame adds a background to the same sequence
 	n = 0
-	for _, l := range strings.Split(m.render(b, false), "\n") {
+	for _, l := range m.detailLines() {
 		if s := ansi.Strip(l); strings.Contains(s, "word word") && !strings.Contains(s, "+word") {
 			n++
 			if !strings.Contains(l, sgr) {

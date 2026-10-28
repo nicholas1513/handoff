@@ -786,9 +786,8 @@ func (m model) detailHeader() string {
 const settingsKey = "s settings"
 
 // footer is the status line, and the column its settings hint starts at, for the mouse.
-func (m model) footer() (string, int) { return m.footerOf(m.layout()) }
-
-func (m model) footerOf(l layout) (string, int) {
+func (m model) footer() (string, int) {
+	l := m.layout()
 	keys := []string{"↑↓ move", "tab/click pane"}
 	if m.focus > 0 && m.shownPending() {
 		keys = append(keys, "space space run", "x reject")

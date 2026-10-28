@@ -85,7 +85,7 @@ func resize(m model, w, h int) model {
 }
 
 // addItem stages it (argv /usr/bin/true unless set) with attachments and returns it as stamped.
-func addItem(t *testing.T, q *queue.Queue, it queue.Item, files map[string]string) queue.Item {
+func addItem(t testing.TB, q *queue.Queue, it queue.Item, files map[string]string) queue.Item {
 	t.Helper()
 	if it.Argv == nil {
 		it.Argv = []string{"/usr/bin/true"}
@@ -101,7 +101,7 @@ func addItem(t *testing.T, q *queue.Queue, it queue.Item, files map[string]strin
 }
 
 // finished records a result for it, as a run or a reject would.
-func finished(t *testing.T, q *queue.Queue, it queue.Item, state, stdout string) {
+func finished(t testing.TB, q *queue.Queue, it queue.Item, state, stdout string) {
 	t.Helper()
 	if err := q.Claim(it); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func numbered(format string, n int) string {
 	return b.String()
 }
 
-func tempFile(t *testing.T, name, body string) string {
+func tempFile(t testing.TB, name, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
@@ -204,8 +204,7 @@ var (
 )
 
 // randomOp picks one user or disk event from what view (m's current screen) shows. once marks an event to apply to
-// one model only: a reject writes the queue, and refresh reuses m.rows' backing array, which value copies share. A
-// disk change is made here and the returned op is the tick after it.
+// one model only: a reject writes the queue. A disk change is made here and the returned op is the tick after it.
 func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (name string, op func(model) model, once bool) {
 	rows := strings.Split(ansi.Strip(view), "\n")
 	menu := strings.Contains(view, "Diff word wrap")
@@ -216,7 +215,7 @@ func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (nam
 	}
 	tick := func(what string) (string, func(model) model, bool) {
 		clock := m.now()
-		return what + ", tick", func(m model) model { next, _ := m.Update(tickMsg(clock)); return next.(model) }, true
+		return what + ", tick", func(m model) model { next, _ := m.Update(tickMsg(clock)); return next.(model) }, false
 	}
 	find := func(sub string) (x, y int, ok bool) {
 		for i, l := range rows {
@@ -362,7 +361,7 @@ func TestDrawingReadsNoFiles(t *testing.T) {
 	q, m := setup(t)
 	tr := tempFile(t, "t.jsonl", `{"type":"ai-title","aiTitle":"Titled session"}`)
 	q.WriteSession(queue.Session{SessionID: sid, Cwd: t.TempDir(), TranscriptPath: tr})
-	m = tickM(withAtt(t, m, 100, 200, 198, 40)) // withAtt writes the result after opening the item
+	m = withAtt(t, m, 100, 200, 198, 40)
 	before := m.View()
 	y := strings.Index(ansi.Strip(before), "│ stdout")
 	y = strings.Count(ansi.Strip(before)[:max(0, y)], "\n")
@@ -376,16 +375,9 @@ func TestDrawingReadsNoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	if after := m.View(); after != before {
-		var changed []string
-		b, a := strings.Split(ansi.Strip(before), "\n"), strings.Split(ansi.Strip(after), "\n")
-		for i := 0; i < max(len(a), len(b)) && len(changed) < 8; i++ {
-			if i >= len(a) || i >= len(b) || a[i] != b[i] {
-				changed = append(changed, fmt.Sprintf("row %d\n    drawn   %q\n    re-read %q", i, b[min(i, len(b)-1)], a[min(i, len(a)-1)]))
-			}
-		}
-		t.Errorf("View read from disk: with the queue root and the transcript removed, these rows changed "+
-			"(each shows something drawing re-read: session title, item state, result, prompt, attachment size, ...):\n  %s",
-			strings.Join(changed, "\n  "))
+		t.Errorf("View read from disk: with the queue root and the transcript removed, the screen changed (the row "+
+			"shows something drawing re-read: session title, item state, result, prompt, attachment size, ...): %s",
+			firstDiff(after, before))
 	}
 	sw, iw, _ := columns(m.w)
 	m = mouseAt(m, sw+iw+5, y, tea.MouseButtonWheelDown)
@@ -662,7 +654,7 @@ func TestRunStartShowsAtOnce(t *testing.T) {
 func TestBoxSelectionAndScrollShowAtOnce(t *testing.T) {
 	trueColor(t)
 	_, m := setup(t)
-	m = tickM(withAtt(t, m, 100, 200, 198, 60)) // result, prompt and attachment boxes all on screen
+	m = withAtt(t, m, 100, 200, 198, 60) // result, prompt and attachment boxes all on screen
 	step := func(what string, f func(model) model, want string) {
 		t.Helper()
 		before := m.View()

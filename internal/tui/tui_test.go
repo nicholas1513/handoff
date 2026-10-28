@@ -938,7 +938,7 @@ func TestOnlyBoxesAreCapped(t *testing.T) {
 			t.Fatalf("result or attachment box not capped, want %q", want)
 		}
 	}
-	if f := flatten(m.detail()); !strings.Contains(f, desc) || !strings.Contains(f, val) {
+	if f := flatDetail(m); !strings.Contains(f, desc) || !strings.Contains(f, val) {
 		t.Fatal("description or argv value cut")
 	}
 }
@@ -1047,32 +1047,15 @@ func longFile(t *testing.T, n int) string {
 }
 
 func TestScrollbarGeometry(t *testing.T) {
-	thumb := func(b []string) (first, n int) {
-		first = -1
-		for i, g := range b {
-			if g == "┃" {
-				if first < 0 {
-					first = i
-				}
-				n++
-			}
+	for _, c := range []struct{ cap, total, top, pos, n int }{
+		{10, 100, 0, 0, 1},    // top
+		{10, 100, 90, 9, 1},   // bottom
+		{10, 100000, 5, 0, 1}, // huge total: still one row
+		{10, 10, 0, 0, 10},    // documented: total<=cap is all thumb
+	} {
+		if pos, n := thumb(c.cap, c.total, c.top); pos != c.pos || n != c.n {
+			t.Errorf("thumb(%d, %d, %d) = %d, %d; want %d, %d", c.cap, c.total, c.top, pos, n, c.pos, c.n)
 		}
-		return
-	}
-	if len(scrollbar(10, 100, 0)) != 10 {
-		t.Fatal("want one glyph per row")
-	}
-	if f, n := thumb(scrollbar(10, 100, 0)); f != 0 || n != 1 {
-		t.Fatalf("top: first %d n %d", f, n)
-	}
-	if f, n := thumb(scrollbar(10, 100, 90)); f+n != 10 || n != 1 {
-		t.Fatalf("bottom: first %d n %d", f, n)
-	}
-	if _, n := thumb(scrollbar(10, 100000, 5)); n != 1 {
-		t.Fatalf("huge total: thumb %d rows, want at least 1", n)
-	}
-	if f, n := thumb(scrollbar(10, 10, 0)); f != 0 || n != 10 { // documented: total<=cap is all thumb
-		t.Fatalf("fits: first %d n %d", f, n)
 	}
 }
 

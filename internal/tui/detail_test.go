@@ -178,6 +178,15 @@ func TestDetailNarrowTerminal(t *testing.T) {
 	}
 }
 
+// flatDetail is the drawn detail unstyled, its wrapped rows rejoined (padding and continuation indents dropped).
+func flatDetail(m model) string {
+	rows := m.detailLines()
+	for i, l := range rows {
+		rows[i] = strings.TrimRight(ansi.Strip(l), " ")
+	}
+	return flatten(strings.Join(rows, "\n"))
+}
+
 func TestDetailPrettyPrintsJSONAttachment(t *testing.T) {
 	_, m := setup(t)
 	src := filepath.Join(t.TempDir(), "body.json")
@@ -193,11 +202,11 @@ func TestCwdHomeShortening(t *testing.T) {
 	_, m := setup(t)
 	cwd := m.reviewed.Item.Cwd
 	m.home = filepath.Dir(cwd)
-	if out := ansi.Strip(m.detail()); !strings.Contains(out, "~/"+filepath.Base(cwd)) {
+	if out := flatDetail(m); !strings.Contains(out, "~/"+filepath.Base(cwd)) {
 		t.Errorf("cwd under home not shortened:\n%s", out)
 	}
 	m.home = cwd[:len(cwd)-1] // a sibling: /x/00 vs /x/001
-	if out := ansi.Strip(m.detail()); !strings.Contains(out, cwd) {
+	if out := flatDetail(m); !strings.Contains(out, cwd) {
 		t.Errorf("sibling of home was shortened:\n%s", out)
 	}
 }
