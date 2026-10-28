@@ -569,9 +569,8 @@ func wrapText(txt string) func(int) []string {
 	return func(w int) []string { return wrapLines(strings.ReplaceAll(txt, "\t", "    "), w) }
 }
 
-// memo caches pure work by key. Each wheel tick rebuilds the detail several times, and re-wrapping a long box
-// or re-reading an attachment on every rebuild made fast scrolling fall seconds behind. Callers must not
-// modify what it returns.
+// memo caches pure work by key. Each wheel tick rebuilds the detail several times, and re-reading an attachment
+// on every rebuild made fast scrolling fall behind. Callers must not modify what it returns.
 type memo[K comparable, V any] struct {
 	sync.Mutex
 	m map[K]V
