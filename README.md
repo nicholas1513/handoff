@@ -82,10 +82,11 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   binary files), each commit's author, message and diff, under diff word wrap like the edit diff.
   If `git am` stops there, you see the commits it made before it stopped (the run makes them too),
   git's error, which the run would hit too, and the raw patch. The item doesn't run until its
-  review copy is drawn. The repo and the HEAD it was reviewed on are pinned: if the repo moves on,
-  or another repo is put at its path, the item shows as changed and Run refuses with `modified`;
-  `o` reviews it again. A repo with no commit yet gets no review copy, and the run is refused (so is
-  every such item with git older than 2.44, which can't turn lazy fetches off). A
+  review copy is drawn. The run's `git am` runs no hooks either (the repo's or yours), nor the repo's
+  fsmonitor, and signs no commit. The repo and the HEAD it was reviewed on are pinned: if the repo
+  moves on, or another repo is put at its path, the item shows as changed and Run refuses with
+  `modified`; `o` reviews it again. A repo with no commit yet gets no review copy, and the run is
+  refused (so is every such item with git older than 2.44, which can't turn lazy fetches off). A
   `git pull` or `git fetch` from a local path gets a warning instead: its changes aren't shown.
 - **Commit review setting:** `Commit review` in settings picks where those commits are reviewed:
   in the viewer, or in **VS Code**. Left on auto it is VS Code when the `code` command is on PATH
@@ -119,7 +120,7 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 | Agent forges which prompt or session asked for it | Hooks run outside the sandbox and write `~/.handoff/sessions/`, which the sandbox can't. The viewer reads provenance from there and marks sessions with no hook record **unverified**. |
 | Shell injection | argv is executed directly, never through a shell. Interpreters (`bash -c`, `python -c`, `env`, `xargs`, …) are flagged. |
 | Item or attachment changed after review | The viewer hashes what it showed and copies attachments to `~/.handoff/snap/`. Run re-verifies the hash, refuses with `modified` if it changed, and passes the snapshot paths, not the live files. |
-| Handed-over commits drawn differently from what `git am` applies | The viewer doesn't parse the patch: it draws git's own result of `git am` on the reviewed copy, in a review copy of the repo with no hooks and none of its config but `am.*`, `mailinfo.*`, `i18n.*`, `apply.*` and `core.whitespace`, overriding attributes and submodule settings that hide a change from the diff. Run refuses with `modified` if the repo's HEAD moved since or another repo is at its path. |
+| Handed-over commits drawn differently from what `git am` applies | The viewer doesn't parse the patch: it draws git's own result of `git am` on the reviewed copy, in a review copy of the repo with no hooks, no filters and none of its config but `am.*`, `mailinfo.*`, `i18n.*`, `apply.*` and `core.whitespace`, overriding attributes and submodule settings that hide a change from the diff. Run refuses with `modified` if the repo's HEAD moved since or another repo is at its path. It pins HEAD and runs `git am` as the review copy does: with replace refs, hooks, the fsmonitor, commit signing and lazy fetches off. It reports `failed` if `git am` made any commit the review copy didn't (tree, author, date or message) or any object its commits added doesn't hash to its id, also where `git am` stopped or failed in the review copy (an object file or setting changed since). |
 | Edit diff shows one file but writes another | An edit item's argv must be exactly `/bin/cp {file:proposed} <target>` for its own absolute target, or it fails to load. Run also refuses if the target's hash differs from when the diff was taken. |
 | Run twice / run after reject | A claim file is created exclusively before running or rejecting. |
 | Terminal tricks in displayed text | Control characters, ANSI escapes and invisible/bidi formatting characters are shown escaped. |

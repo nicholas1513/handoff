@@ -87,6 +87,10 @@ type Reviewed struct {
 	// and its git directory's device and inode ("dev:ino"), which tell it from another directory later put at that
 	// path. All "" if it had no HEAD commit.
 	AmBase, AmRepo, AmRepoID string
+	// For am items, set by the viewer as it starts the run (AmChecked): the commits git am made in the review copy as
+	// runner.AmLog reads them, "" if it made none. The run checks that git am made no other commit in the repository.
+	AmCommits string
+	AmChecked bool
 }
 
 type FileHash struct{ Name, Path, SHA256 string }
@@ -309,12 +313,13 @@ func (q *Queue) Snapshot(id string) (Reviewed, error) {
 var amTimeout = 5 * time.Second
 
 // amRepo is the repository git -C repo works in: its HEAD commit, top level and git directory's "dev:ino", all "" if
-// it has no HEAD commit. Read with hooks, the fsmonitor and lazy fetches off: a partial clone missing HEAD would fetch
-// it with its promisor remote's upload-pack, a command the repository names.
+// it has no HEAD commit. Read with hooks, the fsmonitor and lazy fetches off (a partial clone missing HEAD would fetch
+// it with its promisor remote's upload-pack, a command the repository names), and with no replace refs, as the run
+// and the review copy read it: one could make HEAD^{commit} name another commit.
 func amRepo(repo string) (base, top, id string) {
 	ctx, stop := context.WithTimeout(context.Background(), amTimeout)
 	defer stop()
-	out, _ := exec.CommandContext(ctx, "git", "--no-lazy-fetch", "-c", "core.hooksPath=/dev/null",
+	out, _ := exec.CommandContext(ctx, "git", "--no-lazy-fetch", "--no-replace-objects", "-c", "core.hooksPath=/dev/null",
 		"-c", "core.fsmonitor=false", "-C", repo, "rev-parse", "--show-toplevel", "--absolute-git-dir", "--verify", "-q",
 		"HEAD^{commit}").Output()
 	l := strings.Split(strings.TrimSpace(string(out)), "\n")
