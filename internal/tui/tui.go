@@ -113,7 +113,7 @@ type model struct {
 
 	data    *detailData // what the detail shows from disk and the clock; see loadData
 	rowsGen int         // bumped whenever m.rows or any sessionRow's items/state/fin/nOut/title change
-	seq     int         // bumped by refresh, restate, a run starting and o, which a load in flight must not undo
+	seq     int         // bumped by refresh, restate, a run starting, o and re-checking the open item, which a load in flight must not undo
 	rc      *renderCache
 	pc      *paneCache
 
@@ -328,7 +328,8 @@ func (m *model) open() {
 		return
 	}
 	if m.reviewed != nil && m.reviewed.Item.ID == it.ID {
-		m.changed = m.q.State(*it, time.Now()) == queue.Pending && m.q.Verify(*m.reviewed) != nil
+		// newer than a load in flight, which would put its older changed and data back
+		m.changed, m.seq = m.q.State(*it, time.Now()) == queue.Pending && m.q.Verify(*m.reviewed) != nil, m.seq+1
 		return
 	}
 	r, err := m.q.Snapshot(it.ID)
