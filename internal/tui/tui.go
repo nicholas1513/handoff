@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -62,6 +65,7 @@ type sessionRow struct {
 	nOut    int                  // items[:nOut] are outstanding; fixed at refresh so headers don't move between paint and click
 	fin     map[string]time.Time // finish time per completed item, snapshot at refresh
 	state   map[string]string    // state per item, snapshot at refresh: drawing reads no result files per frame
+	title   string               // the transcript's /resume title, read at refresh
 }
 
 type tickMsg time.Time
@@ -102,9 +106,17 @@ type model struct {
 	w, h     int
 	titles   titleCache
 
+	data    *detailData // what the detail shows from disk and the clock; see loadData
+	rowsGen int         // bumped whenever m.rows or any sessionRow's items/state/fin/nOut/title change
+
 	now        func() time.Time
 	advancedAt time.Time
 }
+
+// gens numbers row snapshots, unique across copies of the model so a shared cache can't mistake one for another.
+var gens atomic.Int64
+
+func nextGen() int { return int(gens.Add(1)) }
 
 func Run(q *queue.Queue, home string) error {
 	_, err := tea.NewProgram(newModel(q, home), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
@@ -164,21 +176,24 @@ func (m *model) refresh() {
 		if r == nil {
 			r = &sessionRow{id: it.SessionID}
 			if s, err := m.q.ReadSession(it.SessionID); err == nil {
-				r.sess = &s
+				r.sess, r.title = &s, m.titles.get(s.TranscriptPath)
 			}
 			byID[it.SessionID] = r
 			rows = append(rows, r)
 		}
 		r.items = append(r.items, it)
 	}
-	m.rows = m.rows[:0]
+	fresh := []sessionRow{} // a new array: copies of the model share the old one
 	for _, r := range rows {
 		r.nOut, r.fin, r.state = m.sortItems(r.items)
-		m.rows = append(m.rows, *r)
+		fresh = append(fresh, *r)
 	}
 	if len(invalid) > 0 {
 		sort.Sort(sort.Reverse(sort.StringSlice(invalid)))
-		m.rows = append(m.rows, sessionRow{id: "invalid", invalid: invalid})
+		fresh = append(fresh, sessionRow{id: "invalid", invalid: invalid})
+	}
+	if !reflect.DeepEqual(fresh, m.rows) {
+		m.rows, m.rowsGen = fresh, nextGen()
 	}
 	m.si, m.ii = 0, 0
 	if keepS == "" {
@@ -218,8 +233,9 @@ func (m *model) enterSession(si int) {
 	}
 }
 
-// open snapshots the selected item, unless it is already the one under review.
+// open snapshots the selected item, unless it is already the one under review, and re-reads the detail's data.
 func (m *model) open() {
+	defer m.loadData()
 	it := m.item()
 	if it == nil {
 		m.reviewed, m.openErr, m.confirm, m.armed = nil, nil, false, false
@@ -290,6 +306,7 @@ func (m *model) toggleSetting(i int) {
 }
 
 func (m *model) move(d int) {
+	si, ii := m.si, m.ii
 	switch m.focus {
 	case 0:
 		m.enterSession(clamp(m.si+d, len(m.rows)))
@@ -300,7 +317,9 @@ func (m *model) move(d int) {
 	case 2:
 		m.scroll = max(0, m.scroll+d)
 	}
-	m.open()
+	if m.si != si || m.ii != ii { // scrolling, or a move pinned at either end, has nothing new to open
+		m.open()
+	}
 	m.clampScroll()
 }
 
@@ -391,11 +410,7 @@ func (m *model) itemPane(s *sessionRow, now time.Time) (rows []string, idx []int
 		if i >= n {
 			ts = s.fin[it.ID]
 		}
-		st := s.state[it.ID]
-		if i == m.ii { // the selected item live, so a run or reject shows at once
-			st = m.q.State(it, now)
-		}
-		add(itemRow(it, st, stamp(ts, now)), i)
+		add(itemRow(it, m.shownState(s, it), stamp(ts, now)), i)
 	}
 	for i, id := range s.invalid {
 		add("⚠ "+id, i)
@@ -468,6 +483,8 @@ func (m *model) startRun() tea.Cmd {
 	q, r := m.q, *m.reviewed
 	ctx, cancel := context.WithCancel(context.Background())
 	m.runningID, m.cancelRun = r.Item.ID, cancel
+	m.restate(r.Item.ID)
+	m.loadData()
 	return func() tea.Msg {
 		_, err := runner.Run(ctx, q, r, time.Now())
 		return runDone{id: r.Item.ID, err: err}
@@ -484,6 +501,30 @@ func (m model) cancelable() bool {
 		return it.ID == m.runningID
 	}
 	return m.q.State(*it, time.Now()) == queue.Running
+}
+
+// drawnState is the selected item's state as drawn: this viewer's run in progress, else the detail's snapshot.
+func (m model) drawnState() string {
+	if it := m.item(); it != nil && m.running && it.ID == m.runningID {
+		return queue.Running
+	}
+	return m.data.state
+}
+
+// shownPending and shownCancelable are pending() and cancelable() as drawn: from snapshots, so drawing reads no files.
+func (m model) shownPending() bool {
+	return m.reviewed != nil && !m.running && m.drawnState() == queue.Pending
+}
+
+func (m model) shownCancelable() bool {
+	it := m.item()
+	if it == nil {
+		return false
+	}
+	if m.running {
+		return it.ID == m.runningID
+	}
+	return m.data.state == queue.Running
 }
 
 // cancel stops the selected run: this viewer's own via its context, a stale one via runner.CancelStale.
@@ -515,6 +556,8 @@ func (m *model) reject() {
 		err = m.q.WriteResult(it, queue.Result{State: queue.Rejected, ExitCode: -1, RanAt: time.Now(), SHA256Reviewed: m.reviewed.Hash})
 	}
 	m.confirm, m.armed, m.status = false, false, "rejected"
+	m.restate(it.ID) // also on an error: the claim may have landed
+	m.loadData()
 	if err != nil {
 		m.status = "reject: " + err.Error()
 		return
@@ -543,6 +586,29 @@ func (m *model) oldestPending(s *sessionRow) (int, bool) {
 		}
 	}
 	return best, best >= 0
+}
+
+// restate re-reads one item's state after this viewer changed it (reject, cancel, a run starting or ending),
+// so the lists and the detail show it at once instead of at the next refresh.
+func (m *model) restate(id string) {
+	m.rows = slices.Clone(m.rows) // copy on write, like the maps: other copies of the model share the array
+	for i := range m.rows {
+		r := &m.rows[i]
+		for _, it := range r.items {
+			if it.ID == id {
+				r.state = with(r.state, id, m.q.State(it, m.now()))
+				m.rowsGen = nextGen()
+			}
+		}
+	}
+}
+
+// shownState is an item's state as drawn: this viewer's run in progress, else the refresh snapshot.
+func (m model) shownState(s *sessionRow, it queue.Item) string {
+	if m.running && it.ID == m.runningID {
+		return queue.Running
+	}
+	return s.state[it.ID]
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -677,10 +743,10 @@ func (m model) footer() (string, int) { return m.footerOf(m.layout()) }
 
 func (m model) footerOf(l layout) (string, int) {
 	keys := []string{"↑↓ move", "tab/click pane"}
-	if m.focus > 0 && m.pending() {
+	if m.focus > 0 && m.shownPending() {
 		keys = append(keys, "space space run", "x reject")
 	}
-	if m.focus > 0 && m.cancelable() {
+	if m.focus > 0 && m.shownCancelable() {
 		keys = append(keys, "c c cancel run")
 	}
 	if m.focus == 2 && len(l.boxes) > 0 {
@@ -828,16 +894,13 @@ func (m model) View() string {
 	var srows []string
 	now := time.Now()
 	for _, r := range m.rows {
-		title, pending := "", 0
-		if r.sess != nil {
-			title = m.titles.get(r.sess.TranscriptPath)
-		}
+		pending := 0
 		for _, it := range r.items {
 			if r.state[it.ID] == queue.Pending {
 				pending++
 			}
 		}
-		srows = append(srows, sessionLabel(r, title, pending, now))
+		srows = append(srows, sessionLabel(r, r.title, pending, now))
 	}
 	var irows []string
 	isel := -1
@@ -846,14 +909,14 @@ func (m model) View() string {
 	}
 
 	header := ""
-	if m.pending() {
+	if m.shownPending() {
 		header = runBtn
 		if m.confirm {
 			header = warn.Render(confirmBtn)
 		} else if m.armed {
 			header = warn.Render(armedBtn)
 		}
-	} else if m.cancelable() {
+	} else if m.shownCancelable() {
 		header = cancelRunBtn
 		if m.cancelConfirm {
 			header = warn.Render(cancelConfirmBtn)
