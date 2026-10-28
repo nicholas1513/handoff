@@ -591,21 +591,39 @@ func (c *memo[K, V]) get(k K, f func() V) V {
 	return v
 }
 
-type wrapKey struct {
-	s string
-	w int
+var attTexts memo[queue.FileHash, string]
+
+// wrapMemo is wrapLines' cache by text, for the two widths last wrapped to, newest first. A layout wraps at dw-6 and
+// dw-2, so rebuilds at one size hit, and a resize drops the old size's wraps: keeping every width held a copy of a
+// large result and its wrap per width passed, half a gigabyte for one drag.
+type wrapMemo struct {
+	sync.Mutex
+	w [2]int
+	m [2]map[string][]string
 }
 
-var (
-	wraps    memo[wrapKey, []string]
-	attTexts memo[queue.FileHash, string]
-)
+var wraps wrapMemo
 
-// wrapLines is s wrapped to w cells, one entry per line.
+// wrapLines is s wrapped to w cells, one entry per line. Callers must not modify it.
 func wrapLines(s string, w int) []string {
-	return wraps.get(wrapKey{s, w}, func() []string {
-		return strings.Split(strings.TrimSuffix(ansi.Wrap(s, w, ""), "\n"), "\n")
-	})
+	c := &wraps
+	c.Lock()
+	defer c.Unlock()
+	if c.m[0] == nil || c.w[0] != w {
+		if c.m[1] == nil || c.w[1] != w {
+			c.w[1], c.m[1] = w, map[string][]string{} // drops the older width's wraps
+		}
+		c.w[0], c.w[1], c.m[0], c.m[1] = c.w[1], c.w[0], c.m[1], c.m[0]
+	}
+	if len(c.m[0]) >= 8192 { // shortcut: bounds entries, not bytes, at one width; bound bytes if many large texts show up
+		c.m[0] = map[string][]string{}
+	}
+	l, ok := c.m[0][s]
+	if !ok {
+		l = strings.Split(strings.TrimSuffix(ansi.Wrap(s, w, ""), "\n"), "\n")
+		c.m[0][s] = l
+	}
+	return l
 }
 
 // attText is an attachment's snapshot copy as shown: JSON pretty-printed, sanitized. Re-opening an item rewrites
