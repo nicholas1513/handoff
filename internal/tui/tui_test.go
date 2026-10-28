@@ -390,17 +390,19 @@ func TestApplyingALoadReadsNoFiles(t *testing.T) {
 	}
 }
 
-// TestLoadRunsBesideTheEventLoop: the tick's load runs while the loop handles input and draws (go test -race), and it
-// writes nothing the loop reads, such as the title cache when a session's title changed.
+// TestLoadRunsBesideTheEventLoop: the tick's load runs while the loop handles input, draws and refreshes after a run
+// (go test -race), and it writes nothing the loop reads, such as the title cache when a session's title changed.
 func TestLoadRunsBesideTheEventLoop(t *testing.T) {
 	q, m := setup(t)
 	tr := tempFile(t, "t.jsonl", `{"type":"ai-title","aiTitle":"one"}`)
 	q.WriteSession(queue.Session{SessionID: sid, Cwd: t.TempDir(), TranscriptPath: tr})
 	m = tickM(m)
+	titles := m.titles // the loop's cache as the load starts, which only the loop may write
 	os.WriteFile(tr, []byte(`{"type":"ai-title","aiTitle":"retitled"}`), 0o600)
 	next, cmd := m.Update(tickMsg(time.Now()))
 	done := make(chan tea.Msg)
 	go func() { done <- cmd() }()
+	next, _ = next.Update(runDone{id: "none"}) // refreshes on the loop, using its title cache, while the load runs
 	m = next.(model)
 	m.focus = 1
 	for _, k := range []string{"k", "j", "x", "o"} {
@@ -408,7 +410,7 @@ func TestLoadRunsBesideTheEventLoop(t *testing.T) {
 		m.View()
 	}
 	l := <-done
-	if m.titles[tr].title != "one" {
+	if titles[tr].title != "one" {
 		t.Fatal("the load wrote the event loop's title cache")
 	}
 	next, cmd = m.Update(l) // read before x and o: read again
