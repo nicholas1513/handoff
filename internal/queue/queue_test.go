@@ -105,6 +105,27 @@ func TestSnapshotDetectsChanges(t *testing.T) {
 	}
 }
 
+// TestSnapshotRefusesAnotherID: item.json is agent-written after the list read checked it; an id naming another
+// directory must not reach the paths built from it.
+func TestSnapshotRefusesAnotherID(t *testing.T) {
+	q, body := newQueue(t)
+	it := addOne(t, q, body)
+	r, err := q.Snapshot(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := it
+	bad.ID = "../../elsewhere"
+	b, _ := json.Marshal(bad)
+	os.WriteFile(filepath.Join(q.Root, "queue", it.ID, "item.json"), b, 0o600)
+	if r, err := q.Snapshot(it.ID); err == nil || r.Item.ID != "" {
+		t.Fatalf("Snapshot of an item.json naming %q: %q, %v", bad.ID, r.Item.ID, err)
+	}
+	if err := q.Verify(r); !errors.Is(err, ErrModified) {
+		t.Fatalf("Verify = %v, want ErrModified", err)
+	}
+}
+
 func TestSnapshotKeepsReviewedBytes(t *testing.T) {
 	q, body := newQueue(t)
 	it := addOne(t, q, body)

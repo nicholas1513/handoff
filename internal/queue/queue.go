@@ -178,6 +178,12 @@ func (q *Queue) Load(id string) (Item, error) {
 	if err != nil {
 		return Item{}, err
 	}
+	return parseAs(b, id)
+}
+
+// parseAs is parse of the item.json read from directory id, which must name that directory: snapshots, claims,
+// results and review copies are all placed by the item's id.
+func parseAs(b []byte, id string) (Item, error) {
 	it, err := parse(b)
 	if err == nil && it.ID != id {
 		err = fmt.Errorf("item.json id %q does not match directory %q", it.ID, id)
@@ -211,7 +217,7 @@ func (q *Queue) read(id string) (Item, map[string][]byte, string, []byte, error)
 	if err != nil {
 		return Item{}, nil, "", nil, err
 	}
-	it, err := parse(raw)
+	it, err := parseAs(raw, id)
 	if err != nil {
 		return Item{}, nil, "", nil, err
 	}
