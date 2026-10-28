@@ -585,6 +585,35 @@ func TestTickAfterResultShowsAtOnce(t *testing.T) {
 	sameAsFresh(t, m, "the tick")
 }
 
+// A tick that shortens the open item's detail (here a broken settings file is fixed) must leave it scrolled no
+// further than its new end, where j changes nothing.
+func TestTickThatShortensTheDetailKeepsItInBounds(t *testing.T) {
+	_, m := setup(t)
+	p := filepath.Join(m.home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m = resize(tickM(m), 120, 14)
+	m.focus = 2
+	if rowWith(drawn(m, 2), "settings problem") == "" {
+		t.Fatalf("setup: no settings problem drawn:\n%s", strings.Join(drawn(m, 2), "\n"))
+	}
+	for i := 0; i < 40; i++ { // to the end
+		m, _ = press(m, "j")
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	m = tickM(m)
+	end := m.View()
+	if m, _ = press(m, "j"); m.View() != end {
+		t.Errorf("the tick left the detail scrolled past its end: %s", firstDiff(end, m.View()))
+	}
+}
+
 func TestRejectShowsAtOnce(t *testing.T) {
 	trueColor(t)
 	_, m := setup(t) // "second" selected; x advances to "first"
