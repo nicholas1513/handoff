@@ -6,6 +6,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -112,6 +113,7 @@ type model struct {
 
 	data    *detailData // what the detail shows from disk and the clock; see loadData
 	rowsGen int         // bumped whenever m.rows or any sessionRow's items/state/fin/nOut/title change
+	seq     int         // bumped by refresh, restate, a run starting and o, which a load in flight must not undo
 	rc      *renderCache
 	pc      *paneCache
 
@@ -162,51 +164,115 @@ func (m *model) item() *queue.Item {
 	return nil
 }
 
-// refresh reloads the queue, keeping the selection on the same session and item ids.
+// refresh reloads the queue on the event loop, keeping the selection on the same session and item ids. The tick
+// reloads off the loop instead (see reload).
 func (m *model) refresh() {
+	m.seq++ // a load in flight read the disk before this one
+	m.apply(m.load()())
+}
+
+// reload reads the queue off the event loop. The read comes back as a loaded message, which Update applies.
+func (m *model) reload() tea.Cmd {
+	f := m.load()
+	return func() tea.Msg { return f() }
+}
+
+// loaded is one read of the queue: the rows, every item's state (also of items gone from the list, for the pull
+// rule), and what the detail shows for the item that was under review when the read began.
+//
+// result.json and item.json are written in place, so a read can catch one mid-write. For that tick the item then
+// reads as it did an instant before (claimed, so running) with the JSON error under its Result, or as an invalid
+// entry: the reads on the event loop could catch the runner's or another process's writes the same way. This
+// viewer's own writes bump seq, so a load that overlapped them is never applied.
+type loaded struct {
+	seq     int // the model's seq when the read began
+	rows    []sessionRow
+	same    bool // rows equal the model's rows when the read began
+	st      map[string]string
+	err     error
+	titles  titleCache
+	rev     *queue.Reviewed
+	changed bool
+	data    *detailData // nil: rev is no longer listed
+}
+
+// load returns the read of the queue for refresh. It touches no model field and shares nothing the event loop
+// changes (the rows and the reviewed item are never written once set, and it updates its own copy of the titles),
+// so it can run off the loop.
+func (m *model) load() func() loaded {
+	q, home, now, old := m.q, m.home, m.now(), m.rows
+	l := loaded{seq: m.seq, titles: maps.Clone(m.titles), rev: m.reviewed}
+	return func() loaded {
+		items, invalid, err := q.List()
+		l.err = err
+		byID := map[string]*sessionRow{}
+		var rows []*sessionRow
+		for i := len(items) - 1; i >= 0; i-- { // newest first
+			it := items[i]
+			r := byID[it.SessionID]
+			if r == nil {
+				r = &sessionRow{id: it.SessionID}
+				if s, err := q.ReadSession(it.SessionID); err == nil {
+					r.sess, r.title = &s, l.titles.get(s.TranscriptPath)
+				}
+				byID[it.SessionID] = r
+				rows = append(rows, r)
+			}
+			r.items = append(r.items, it)
+		}
+		l.rows, l.st = []sessionRow{}, map[string]string{} // a new array: copies of the model share the old one
+		for _, r := range rows {
+			r.nOut, r.fin, r.state = sortItems(q, r.items, now)
+			maps.Copy(l.st, r.state)
+			l.rows = append(l.rows, *r)
+		}
+		if len(invalid) > 0 {
+			sort.Sort(sort.Reverse(sort.StringSlice(invalid)))
+			l.rows = append(l.rows, sessionRow{id: "invalid", invalid: invalid})
+		}
+		l.same = reflect.DeepEqual(l.rows, old)
+		for _, r := range old { // gone from the list: their state as State reads it
+			for _, it := range r.items {
+				if _, ok := l.st[it.ID]; !ok {
+					l.st[it.ID] = q.State(it, now)
+				}
+			}
+		}
+		if r := l.rev; r != nil {
+			for _, s := range l.rows {
+				if st, ok := s.state[r.Item.ID]; ok {
+					l.changed = st == queue.Pending && q.Verify(*r) != nil
+					l.data = readData(q, home, s.sess, r, st)
+				}
+			}
+		}
+		return l
+	}
+}
+
+// apply puts a load on screen, keeping the selection on the same session and item ids. It reads no files unless
+// the selection is no longer the item the load read the detail for.
+func (m *model) apply(l loaded) {
+	st := func(it queue.Item) string { return l.st[it.ID] }
 	var keepS, keepI string
 	had := false // the kept session had a pending item before this reload
 	if s := m.session(); s != nil {
 		keepS = s.id
-		_, had = m.oldestPending(s)
+		_, had = oldestPending(s, st)
 	}
 	if it := m.item(); it != nil {
 		keepI = it.ID
 	}
-	items, invalid, err := m.q.List()
-	if err != nil {
-		m.status = err.Error()
+	if l.err != nil {
+		m.status = l.err.Error()
 	}
-	byID := map[string]*sessionRow{}
-	var rows []*sessionRow
-	for i := len(items) - 1; i >= 0; i-- { // newest first
-		it := items[i]
-		r := byID[it.SessionID]
-		if r == nil {
-			r = &sessionRow{id: it.SessionID}
-			if s, err := m.q.ReadSession(it.SessionID); err == nil {
-				r.sess, r.title = &s, m.titles.get(s.TranscriptPath)
-			}
-			byID[it.SessionID] = r
-			rows = append(rows, r)
-		}
-		r.items = append(r.items, it)
-	}
-	fresh := []sessionRow{} // a new array: copies of the model share the old one
-	for _, r := range rows {
-		r.nOut, r.fin, r.state = m.sortItems(r.items)
-		fresh = append(fresh, *r)
-	}
-	if len(invalid) > 0 {
-		sort.Sort(sort.Reverse(sort.StringSlice(invalid)))
-		fresh = append(fresh, sessionRow{id: "invalid", invalid: invalid})
-	}
-	if !reflect.DeepEqual(fresh, m.rows) {
-		m.rows, m.rowsGen = fresh, nextGen()
+	m.titles = l.titles
+	if !l.same {
+		m.rows, m.rowsGen = l.rows, nextGen()
 	}
 	m.si, m.ii = 0, 0
 	if keepS == "" {
-		m.enterSession(0)
+		m.enterSession(0, st)
 	}
 	for i, r := range m.rows {
 		if r.id == keepS {
@@ -223,24 +289,35 @@ func (m *model) refresh() {
 	}
 	// a new item arriving (none was pending before) after the selection finished pulls the selection onto it (same session only)
 	if it := m.item(); it != nil && !had && !m.running {
-		if st := m.q.State(*it, time.Now()); st != queue.Pending && st != queue.Running {
-			if best, ok := m.oldestPending(m.session()); ok {
+		if s := st(*it); s != queue.Pending && s != queue.Running {
+			if best, ok := oldestPending(m.session(), st); ok {
 				m.ii, m.advancedAt, m.reviewed = best, m.now(), nil
 			}
 		}
 	}
-	m.open()
+	if it := m.item(); it != nil && l.data != nil && m.reviewed == l.rev && it.ID == l.rev.Item.ID {
+		m.changed = l.changed
+		if !reflect.DeepEqual(l.data, m.data) { // the old snapshot when nothing changed, so caches keyed on it hold
+			m.data = l.data
+		}
+		m.clampScroll()
+		return
+	}
+	m.open() // the selection is not the item read for the detail: read it now
 }
 
-// enterSession selects the row's oldest pending item (guarding space like an advance), else the newest.
-func (m *model) enterSession(si int) {
+// enterSession selects the row's oldest pending item by st (guarding space like an advance), else the newest.
+func (m *model) enterSession(si int, st func(queue.Item) string) {
 	m.si, m.ii = si, 0
 	if s := m.session(); s != nil {
-		if best, ok := m.oldestPending(s); ok {
+		if best, ok := oldestPending(s, st); ok {
 			m.ii, m.advancedAt = best, m.now()
 		}
 	}
 }
+
+// live is an item's state on disk now.
+func (m *model) live(it queue.Item) string { return m.q.State(it, time.Now()) }
 
 // open snapshots the selected item, unless it is already the one under review, and re-reads the detail's data.
 func (m *model) open() {
@@ -317,7 +394,7 @@ func (m *model) move(d int) {
 	si, ii := m.si, m.ii
 	switch m.focus {
 	case 0:
-		m.enterSession(clamp(m.si+d, len(m.rows)))
+		m.enterSession(clamp(m.si+d, len(m.rows)), m.live)
 	case 1:
 		if s := m.session(); s != nil {
 			m.ii = clamp(m.ii+d, max(len(s.items), len(s.invalid)))
@@ -334,11 +411,11 @@ func (m *model) move(d int) {
 func outstanding(st string) bool { return st == queue.Pending || st == queue.Running }
 
 // finish is when a completed item ended: the result's RanAt, else when it was revoked, else (expired) its Expires.
-func (m *model) finish(it queue.Item) time.Time {
-	if r, err := m.q.ReadResult(it); err == nil {
+func finish(q *queue.Queue, it queue.Item) time.Time {
+	if r, err := q.ReadResult(it); err == nil {
 		return r.RanAt
 	}
-	if at, ok := m.q.RevokedAt(it); ok {
+	if at, ok := q.RevokedAt(it); ok {
 		return at
 	}
 	return it.Expires
@@ -346,17 +423,16 @@ func (m *model) finish(it queue.Item) time.Time {
 
 // sortItems: outstanding by Created ascending, then completed by finish time descending; ties by ID.
 // Returns the outstanding count, the completed items' finish times and every item's state.
-func (m *model) sortItems(items []queue.Item) (int, map[string]time.Time, map[string]string) {
-	now := m.now()
+func sortItems(q *queue.Queue, items []queue.Item, now time.Time) (int, map[string]time.Time, map[string]string) {
 	out := map[string]bool{}
 	at := map[string]time.Time{}
 	st := map[string]string{}
 	for _, it := range items {
-		st[it.ID] = m.q.State(it, now)
+		st[it.ID] = q.State(it, now)
 		if out[it.ID] = outstanding(st[it.ID]); out[it.ID] {
 			at[it.ID] = it.Created
 		} else {
-			at[it.ID] = m.finish(it)
+			at[it.ID] = finish(q, it)
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -513,7 +589,7 @@ func (m *model) startRun() tea.Cmd {
 		m.confirm, m.armed = false, false
 		return nil
 	}
-	m.confirm, m.armed, m.running, m.status = false, false, true, "running…"
+	m.confirm, m.armed, m.running, m.status, m.seq = false, false, true, "running…", m.seq+1
 	q, r := m.q, *m.reviewed
 	ctx, cancel := context.WithCancel(context.Background())
 	m.runningID, m.cancelRun = r.Item.ID, cancel
@@ -603,17 +679,17 @@ func (m *model) advance(fromID string) {
 	if s == nil || cur == nil || cur.ID != fromID {
 		return
 	}
-	if best, ok := m.oldestPending(s); ok {
+	if best, ok := oldestPending(s, m.live); ok {
 		m.ii, m.advancedAt, m.reviewed = best, m.now(), nil
 		m.open()
 	}
 }
 
-// oldestPending is the index of the row's pending item with the earliest Created (first in list order on a tie).
-func (m *model) oldestPending(s *sessionRow) (int, bool) {
+// oldestPending is the index of the row's item pending by st with the earliest Created (first in list order on a tie).
+func oldestPending(s *sessionRow, st func(queue.Item) string) (int, bool) {
 	best := -1
 	for i, it := range s.items {
-		if m.q.State(it, time.Now()) == queue.Pending && (best < 0 || it.Created.Before(s.items[best].Created)) {
+		if st(it) == queue.Pending && (best < 0 || it.Created.Before(s.items[best].Created)) {
 			best = i
 		}
 	}
@@ -627,7 +703,7 @@ func (m *model) restate(id, st string) {
 		if old, ok := r.state[id]; ok && old != st {
 			m.rows = slices.Clone(m.rows) // copy on write, like the maps: other copies of the model share the array
 			m.rows[i].state = with(r.state, id, st)
-			m.rowsGen = nextGen()
+			m.rowsGen, m.seq = nextGen(), m.seq+1
 		}
 	}
 }
@@ -655,8 +731,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		m.clampScroll()
 	case tickMsg:
-		m.refresh()
-		return m, tick()
+		return m, m.reload()
+	case loaded:
+		if msg.seq != m.seq { // this viewer changed something since the read began, which applying it could undo
+			return m, m.reload()
+		}
+		m.apply(msg)
+		return m, tick() // the next tick waits for this load, so slow loads can't pile up
 	case runDone:
 		if m.cancelRun != nil {
 			m.cancelRun() // releases the context
@@ -752,7 +833,7 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 			m.reveal(m.selBox())
 		}
 	case "o":
-		m.reviewed = nil
+		m.reviewed, m.seq = nil, m.seq+1
 		m.open()
 	case "s":
 		m.menu = true
@@ -925,7 +1006,7 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		m.focus = pane
 		if pane == 0 && vis && row < len(m.rows) {
-			m.enterSession(row)
+			m.enterSession(row, m.live)
 		} else if item >= 0 {
 			m.ii = item
 		}

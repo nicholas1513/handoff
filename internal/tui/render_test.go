@@ -213,10 +213,7 @@ func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (nam
 	mouse := func(what string, x, y int, b tea.MouseButton) (string, func(model) model, bool) {
 		return fmt.Sprintf("%s %v at %d,%d", what, b, x, y), func(m model) model { return mouseAt(m, x, y, b) }, false
 	}
-	tick := func(what string) (string, func(model) model, bool) {
-		clock := m.now()
-		return what + ", tick", func(m model) model { next, _ := m.Update(tickMsg(clock)); return next.(model) }, false
-	}
+	tick := func(what string) (string, func(model) model, bool) { return what + ", tick", tickM, false }
 	find := func(sub string) (x, y int, ok bool) {
 		for i, l := range rows {
 			if j := strings.Index(l, sub); j >= 0 {

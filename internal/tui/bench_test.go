@@ -100,12 +100,24 @@ func BenchmarkWheelOverItems(b *testing.B) {
 	}
 }
 
-// BenchmarkRefresh is the 2 s tick: reload the queue and re-open the selection.
+// BenchmarkRefresh is the 2 s tick on the event loop: issuing the load and applying it. The load's reads run off the
+// loop (BenchmarkLoad).
 func BenchmarkRefresh(b *testing.B) {
 	m := benchModel(b)
+	_, cmd := m.Update(tickMsg(time.Now()))
+	l := cmd()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		next, _ := m.Update(tickMsg(time.Now()))
-		m = next.(model)
+		next.Update(l)
+	}
+}
+
+// BenchmarkLoad is the tick's reads of the queue, off the event loop.
+func BenchmarkLoad(b *testing.B) {
+	m := benchModel(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.load()()
 	}
 }

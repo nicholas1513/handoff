@@ -657,8 +657,9 @@ func (m model) attBox(name string) box {
 	return m.atTop(b)
 }
 
-// detailData is everything the detail shows from disk and the clock. loadData reads it when an item opens (so at
-// each tick too) and after this viewer acts on an item; drawing reads only this. Never modified once set.
+// detailData is everything the detail shows from disk and the clock. loadData reads it when an item opens and after
+// this viewer acts on an item, and each tick's load (see load) for the item under review; drawing reads only this.
+// Never modified once set.
 type detailData struct {
 	expires  string // "expires in" while pending
 	invalid  bool   // the selection is an item that failed to load
@@ -677,40 +678,19 @@ type detailData struct {
 // loadData re-reads the detail's data, keeping the old snapshot when nothing changed so caches keyed on it hold, and
 // the item's state into the rows (see restate).
 func (m *model) loadData() {
-	d, s, now := &detailData{}, m.session(), time.Now()
+	d, s := &detailData{}, m.session()
 	switch r := m.reviewed; {
 	case s != nil && s.invalid != nil && m.ii < len(s.invalid):
 		_, err := m.q.Load(s.invalid[m.ii])
 		d.invalid, d.loadErr = true, fmt.Sprint(err)
 	case r != nil:
-		it := r.Item
-		st := m.q.State(it, m.now()) // m.now, as refresh reads the rows' states
-		if m.restate(it.ID, st); st == queue.Pending {
-			d.expires = strings.TrimSuffix(it.Expires.Sub(now).Round(time.Minute).String(), "0s")
+		st := m.q.State(r.Item, m.now()) // m.now, as refresh reads the rows' states
+		m.restate(r.Item.ID, st)
+		var sess *queue.Session
+		if s != nil {
+			sess = s.sess
 		}
-		project := it.Cwd
-		if d.verified = s != nil && s.sess != nil; d.verified {
-			d.cwd, project = s.sess.Cwd, s.sess.Cwd
-			if pr, err := m.q.PromptBefore(it.SessionID, it.Created); err == nil {
-				d.prompt = &pr
-			}
-		}
-		settings := rules.Load(rules.DefaultFiles(m.home, project))
-		d.problems, d.badge = settings.Problems, settings.Check(it.Argv)
-		if res, err := m.q.ReadResult(it); err == nil {
-			d.res = &res
-		} else if !errors.Is(err, os.ErrNotExist) {
-			d.resErr = err.Error()
-		}
-		d.sizes, d.atts = map[string]int{}, map[string]string{}
-		for _, f := range r.FileHashes[1:] { // item.json, then the attachments in it.Files order
-			if fi, err := os.Stat(f.Path); err == nil {
-				d.sizes[f.Name] = int(fi.Size())
-			}
-			if it.Edit == "" { // an edit's attachment is shown as the Diff instead
-				d.atts[f.Name] = attText(f)
-			}
-		}
+		d = readData(m.q, m.home, sess, r, st)
 	default:
 		if it := m.item(); it != nil {
 			m.restate(it.ID, m.q.State(*it, m.now()))
@@ -719,6 +699,39 @@ func (m *model) loadData() {
 	if !reflect.DeepEqual(d, m.data) {
 		m.data = d
 	}
+}
+
+// readData reads what the detail shows for r, the item under review, in state st, whose session record is sess (nil:
+// none). It touches no model state, so a load can call it off the event loop.
+func readData(q *queue.Queue, home string, sess *queue.Session, r *queue.Reviewed, st string) *detailData {
+	d, it := &detailData{}, r.Item
+	if st == queue.Pending {
+		d.expires = strings.TrimSuffix(it.Expires.Sub(time.Now()).Round(time.Minute).String(), "0s")
+	}
+	project := it.Cwd
+	if d.verified = sess != nil; d.verified {
+		d.cwd, project = sess.Cwd, sess.Cwd
+		if pr, err := q.PromptBefore(it.SessionID, it.Created); err == nil {
+			d.prompt = &pr
+		}
+	}
+	settings := rules.Load(rules.DefaultFiles(home, project))
+	d.problems, d.badge = settings.Problems, settings.Check(it.Argv)
+	if res, err := q.ReadResult(it); err == nil {
+		d.res = &res
+	} else if !errors.Is(err, os.ErrNotExist) {
+		d.resErr = err.Error()
+	}
+	d.sizes, d.atts = map[string]int{}, map[string]string{}
+	for _, f := range r.FileHashes[1:] { // item.json, then the attachments in it.Files order
+		if fi, err := os.Stat(f.Path); err == nil {
+			d.sizes[f.Name] = int(fi.Size())
+		}
+		if it.Edit == "" { // an edit's attachment is shown as the Diff instead
+			d.atts[f.Name] = attText(f)
+		}
+	}
+	return d
 }
 
 // detailSegs is the detail in order: text runs and the Result, prompt and attachment boxes. It reads m.data, never
