@@ -109,6 +109,7 @@ type model struct {
 	data    *detailData // what the detail shows from disk and the clock; see loadData
 	rowsGen int         // bumped whenever m.rows or any sessionRow's items/state/fin/nOut/title change
 	rc      *renderCache
+	pc      *paneCache
 
 	now        func() time.Time
 	advancedAt time.Time
@@ -125,7 +126,7 @@ func Run(q *queue.Queue, home string) error {
 }
 
 func newModel(q *queue.Queue, home string) model {
-	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}, now: time.Now, rc: newRenderCache()}
+	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}, now: time.Now, rc: newRenderCache(), pc: newPaneCache()}
 	var err error
 	if m.settings, err = loadSettings(q.Root); err != nil {
 		m.status = "settings: " + err.Error()
@@ -438,19 +439,45 @@ func itemWindow(n, sel, height, top int) int {
 	return top
 }
 
-// itemView is the items pane as drawn: the pane rows from the scroll offset with indicator lines,
-// and the item index each drawn line selects (-1: header or indicator). View and the mouse both use it.
-func (m *model) itemView(s *sessionRow, now time.Time) (rows []string, idx []int, sel int) {
-	all, ai := m.itemPane(s, now)
-	row := -1
-	for j, i := range ai {
+// itemList is a session's items-pane rows and the item index each shows, as itemPane builds them.
+type itemList struct {
+	rows []string
+	idx  []int
+}
+
+// itemList is itemPane, cached while the rows, the selected session, this viewer's run, the day the stamps are
+// relative to and the styling are unchanged. Callers must not modify it.
+func (m *model) itemList(s *sessionRow, now time.Time) *itemList {
+	run, n := "", now.Local()
+	if m.running {
+		run = m.runningID
+	}
+	return m.pc.list.get(listKey{m.rowsGen, m.si, run, n.Year()*1000 + n.YearDay(), lookNow()}, func() *itemList {
+		rows, idx := m.itemPane(s, now)
+		return &itemList{rows, idx}
+	})
+}
+
+// itemWin is the items pane's rows, the first one drawn and the selected one's index (-1: none). It keeps itemTop in
+// step with the selection, so View and the mouse agree.
+func (m *model) itemWin(s *sessionRow, now time.Time) (l *itemList, top, row int) {
+	l, row = m.itemList(s, now), -1
+	for j, i := range l.idx {
 		if i == m.ii {
 			row = j
 		}
 	}
+	m.itemTop = itemWindow(len(l.rows), row, max(5, m.h-3)-1, m.itemTop)
+	return l, m.itemTop, row
+}
+
+// itemView is the items pane as drawn: the pane rows from the scroll offset with indicator lines,
+// and the item index each drawn line selects (-1: header or indicator). View and the mouse both use it.
+// They may share itemList's arrays, so they are read-only.
+func (m *model) itemView(s *sessionRow, now time.Time) (rows []string, idx []int, sel int) {
+	l, top, row := m.itemWin(s, now)
+	all, ai := l.rows, l.idx
 	height := max(5, m.h-3) - 1
-	top := itemWindow(len(all), row, height, m.itemTop)
-	m.itemTop = top
 	end := min(len(all), top+height)
 	rows, idx, sel = all[top:end], ai[top:end], row-top
 	if len(all) > height {
@@ -616,7 +643,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	nm, cmd := m.update(msg)
 	next := nm.(model)
 	if s := next.session(); s != nil {
-		next.itemView(s, next.now()) // keeps itemTop in step with the selection, so View and the mouse agree
+		next.itemWin(s, next.now())
 	}
 	return next, cmd
 }
@@ -923,9 +950,103 @@ var (
 func (m model) View() string {
 	sw, iw, dw := columns(m.w)
 	h := max(5, m.h-3) // borders + status line
+	sp, ip := m.sessionsPane(sw, h), m.itemsPane(iw, h)
+	f := m.pc.detail.get(frameKey{dw, m.focus == 2, lookNow()}, func() paneFrame { return paneFrameOf("Detail", dw, m.focus == 2) })
+	body := append([]string{f.title, pad(ansi.Truncate(m.detailHeader(), dw-2, ""), dw-2)}, m.detailRows(h-2)...)
+	status, _ := m.footer()
+	// lipgloss.JoinVertical padded every line to the widest, which is the status line when it is the longer
+	sl := strings.Split(status, "\n")
+	width := sw + iw + dw
+	for _, l := range sl {
+		width = max(width, ansi.StringWidth(l))
+	}
+	fill := strings.Repeat(" ", width-sw-iw-dw)
+	var b strings.Builder
+	b.Grow((h + 3) * width * 4)
+	for i := range h + 2 {
+		b.WriteString(sp[i])
+		b.WriteString(ip[i])
+		switch i {
+		case 0:
+			b.WriteString(f.top)
+		case h + 1:
+			b.WriteString(f.bottom)
+		default:
+			b.WriteString(f.side)
+			b.WriteString(body[i-1])
+			b.WriteString(f.side)
+		}
+		b.WriteString(fill)
+		b.WriteByte('\n')
+	}
+	for i, l := range sl {
+		b.WriteString(pad(l, width))
+		if i < len(sl)-1 {
+			b.WriteByte('\n')
+		}
+	}
+	v := b.String()
+	if m.menu {
+		v = m.withOverlay(v)
+	}
+	return v
+}
 
-	var srows []string
-	now := time.Now()
+// paneCache holds the sessions and items panes as drawn, and the detail pane's frame, shared by every copy of the
+// model like renderCache and keyed the same way.
+type paneCache struct {
+	sess   sessPane
+	list   once[listKey, *itemList]
+	items  once[itemsKey, []string]
+	detail once[frameKey, paneFrame]
+}
+
+func newPaneCache() *paneCache { return &paneCache{} }
+
+type listKey struct {
+	gen, si int
+	run     string // this viewer's running item, drawn as running
+	day     int    // the local date stamps are relative to
+	look    look
+}
+
+type itemsKey struct {
+	list           *itemList
+	top, row, w, h int
+	on             bool
+	look           look
+}
+
+type frameKey struct {
+	w    int
+	on   bool
+	look look
+}
+
+// sessPane is the sessions pane as drawn, valid while its key holds and the clock is in [from, until), the span in
+// which every label's age reads the same.
+type sessPane struct {
+	key         sessKey
+	from, until time.Time
+	lines       []string
+}
+
+type sessKey struct {
+	gen, si, w, h int
+	on            bool
+	look          look
+}
+
+// sessionsPane is the sessions pane's lines, built again when the rows, selection, size, focus or styling change or
+// a label's age would read differently.
+func (m model) sessionsPane(w, h int) []string {
+	now, c := time.Now(), &m.pc.sess
+	k := sessKey{m.rowsGen, m.si, w, h, m.focus == 0, lookNow()}
+	if c.lines != nil && c.key == k && !now.Before(c.from) && now.Before(c.until) {
+		return c.lines
+	}
+	c.key, c.from, c.until = k, time.Time{}, now.Add(time.Hour) // the labels' ages narrow this
+	var rows []string
 	for _, r := range m.rows {
 		pending := 0
 		for _, it := range r.items {
@@ -933,46 +1054,96 @@ func (m model) View() string {
 				pending++
 			}
 		}
-		srows = append(srows, sessionLabel(r, r.title, pending, now))
+		rows = append(rows, sessionLabel(r, r.title, pending, now))
+		if len(r.items) > 0 {
+			from, until := ageSpan(newest(r.items), now)
+			if from.After(c.from) {
+				c.from = from
+			}
+			if until.Before(c.until) {
+				c.until = until
+			}
+		}
 	}
-	var irows []string
-	isel := -1
-	if s := m.session(); s != nil {
-		irows, _, isel = m.itemView(s, m.now())
-	}
-
-	status, _ := m.footer()
-	v := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Top,
-			m.pane(0, sw, h, "Sessions", srows, m.si),
-			m.pane(1, iw, h, "Items", irows, isel),
-			m.pane(2, dw, h, "Detail", append([]string{m.detailHeader()}, m.detailRows(h-2)...), -1),
-		),
-		status,
-	)
-	if m.menu {
-		v = m.withOverlay(v)
-	}
-	return v
+	c.lines = paneLines("Sessions", w, h, m.focus == 0, rows, m.si)
+	return c.lines
 }
 
-func (m model) pane(i, w, h int, title string, rows []string, selected int) string {
-	st := border
-	if m.focus == i {
-		st = focused
+// itemsPane is the items pane's lines, built again when its rows, window, selection, size, focus or styling change.
+func (m model) itemsPane(w, h int) []string {
+	s := m.session()
+	if s == nil {
+		return m.pc.items.get(itemsKey{w: w, h: h, on: m.focus == 1, look: lookNow()}, func() []string {
+			return paneLines("Items", w, h, m.focus == 1, nil, -1)
+		})
 	}
-	lines := []string{bold.Render(title)}
+	l, top, row := m.itemWin(s, m.now())
+	return m.pc.items.get(itemsKey{l, top, row, w, h, m.focus == 1, lookNow()}, func() []string {
+		rows, _, sel := m.itemView(s, m.now())
+		return paneLines("Items", w, h, m.focus == 1, rows, sel)
+	})
+}
+
+// paneFrame is a pane's border, styled for focus, and its title row padded to the inner width.
+type paneFrame struct{ top, side, bottom, title string }
+
+func paneFrameOf(title string, w int, on bool) paneFrame {
+	bs := border
+	if on {
+		bs = focused
+	}
+	st, b := lipgloss.NewStyle().Foreground(bs.GetBorderTopForeground()), lipgloss.RoundedBorder()
+	return paneFrame{
+		top:    st.Render(b.TopLeft + strings.Repeat(b.Top, w-2) + b.TopRight),
+		side:   st.Render(b.Left),
+		bottom: st.Render(b.BottomLeft + strings.Repeat(b.Bottom, w-2) + b.BottomRight),
+		title:  pad(bold.Render(title), w-2),
+	}
+}
+
+// paneLines is a pane drawn line by line as the lipgloss border style drew it: the title then the rows, each cut to
+// w-2 cells and padded (the selected one reversed), h lines in all between the top and bottom borders.
+func paneLines(title string, w, h int, on bool, rows []string, selected int) []string {
+	f := paneFrameOf(title, w, on)
+	out := []string{f.top, f.side + f.title + f.side}
 	for j, r := range rows {
-		if len(lines) == h {
+		if len(out) == h+1 {
 			break
 		}
 		r = lipgloss.NewStyle().MaxWidth(w - 2).Render(r)
 		if j == selected {
 			r = sel.Render(r)
 		}
-		lines = append(lines, r)
+		out = append(out, f.side+pad(r, w-2)+f.side)
 	}
-	return st.Width(w - 2).Height(h).MaxHeight(h + 2).Render(strings.Join(lines, "\n"))
+	for len(out) < h+1 {
+		out = append(out, f.side+strings.Repeat(" ", w-2)+f.side)
+	}
+	return append(out, f.bottom)
+}
+
+// pad fills s with spaces to w cells.
+func pad(s string, w int) string { return s + strings.Repeat(" ", max(0, w-ansi.StringWidth(s))) }
+
+// ageSpan is when age(now-t) last changed and when it next will: it changes only on whole minutes after t.
+func ageSpan(t, now time.Time) (from, until time.Time) {
+	d := now.Sub(t)
+	if d < time.Minute {
+		return time.Time{}, t.Add(time.Minute)
+	}
+	from = t.Add(d.Truncate(time.Minute))
+	return from, from.Add(time.Minute)
+}
+
+// newest is the latest Created among items.
+func newest(items []queue.Item) time.Time {
+	n := items[0].Created
+	for _, it := range items {
+		if it.Created.After(n) {
+			n = it.Created
+		}
+	}
+	return n
 }
 
 func sessionLabel(r sessionRow, title string, pending int, now time.Time) string {
@@ -988,13 +1159,7 @@ func sessionLabel(r sessionRow, title string, pending int, now time.Time) string
 	}
 	parts := []string{title, filepath.Base(r.sess.Cwd)}
 	if len(r.items) > 0 {
-		newest := r.items[0].Created
-		for _, it := range r.items {
-			if it.Created.After(newest) {
-				newest = it.Created
-			}
-		}
-		parts = append(parts, age(now.Sub(newest)))
+		parts = append(parts, age(now.Sub(newest(r.items))))
 	}
 	label := strings.Join(parts, " · ")
 	if pending > 0 {
