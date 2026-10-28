@@ -198,18 +198,8 @@ func diffColor(l string) lipgloss.TerminalColor {
 	return lipgloss.NoColor{}
 }
 
-func (m model) detail() string { return m.detailOf(m.layout()) }
-
-func (m model) detailOf(l layout) string {
-	var b strings.Builder
-	for _, s := range l.segs {
-		b.WriteString(s.text)
-		if s.box != nil {
-			b.WriteString(m.render(*s.box, s.box.id == l.sel))
-		}
-	}
-	return b.String()
-}
+// detail is the whole detail as drawn, every row.
+func (m model) detail() string { return strings.Join(m.detailLines(), "\n") }
 
 // capPct is a box height: pct% of the window, at least 3 lines.
 func (m model) capPct(pct int) int { return max(3, m.h*pct/100) }
@@ -225,25 +215,6 @@ func (m model) mkBox(id string, wrap func(w int) []string, cap int) box {
 		return m.atTop(box{id: id, lines: l, framed: true, cap: cap})
 	}
 	return box{id: id, lines: wrap(dw - 2), cap: cap}
-}
-
-// render draws a box and its trailing newline: the framed window, or the plain lines.
-func (m model) render(b box, sel bool) string {
-	if !b.framed {
-		return strings.Join(b.lines, "\n") + "\n"
-	}
-	_, _, dw := columns(m.w)
-	e := m.edgesOf(sel)
-	out := []string{e.top}
-	pos, n := thumb(b.cap, len(b.lines), b.top)
-	for i := range b.cap {
-		g := e.side
-		if i >= pos && i < pos+n {
-			g = e.thumb
-		}
-		out = append(out, e.side+cell(b.lines[b.top+i], b.colorAt(b.top+i), dw-6)+g+e.side)
-	}
-	return strings.Join(append(out, m.foot(b.top, b.cap, len(b.lines), sel)), "\n") + "\n"
 }
 
 // colorAt is line k's foreground: the diff's per-line colour, else nil.
@@ -332,10 +303,10 @@ func (m model) detailLayout() *detailLayout {
 		return d
 	}
 	_, _, dw := columns(m.w)
-	d, c := &detailLayout{key: k, diffExp: m.diffExp, boxX: m.boxX, blank: strings.Repeat(" ", dw-2)}, m
+	d := &detailLayout{key: k, diffExp: m.diffExp, boxX: m.boxX, blank: strings.Repeat(" ", dw-2)}
 	d.edges = [2]edges{m.edgesOf(false), m.edgesOf(true)}
-	c.boxTop = nil // built at top 0: tops are applied when drawing
-	d.segs = c.detailSegs()
+	m.boxTop = nil // built at top 0: tops are applied when drawing
+	d.segs = m.detailSegs()
 	for _, s := range d.segs {
 		switch {
 		case s.box == nil:
@@ -507,24 +478,9 @@ func thumb(cap, total, top int) (pos, n int) {
 	return max(0, min(pos, cap-n)), n
 }
 
-// scrollbar is one glyph per row of a cap-row window: a dim track and the thumb.
-func scrollbar(cap, total, top int) []string {
-	pos, n := thumb(cap, total, top)
-	bar := make([]string, cap)
-	for i := range bar {
-		bar[i] = "│"
-		if i >= pos && i < pos+n {
-			bar[i] = "┃"
-		}
-	}
-	return bar
-}
-
-// A framed box is a scrollable panel dw-2 wide (the detail wrap width): rounded border, a scrollbar in the last
-// inner column, and the line range in the bottom border.
-
 // edges are a framed box's border pieces, styled for its selection state: the top border, a side (also the
-// scrollbar's track) and the scrollbar's thumb.
+// scrollbar's track) and the scrollbar's thumb. A framed box is dw-2 wide: rounded border, a scrollbar in the last
+// inner column, and the line range in the bottom border.
 type edges struct{ top, side, thumb string }
 
 func edgeStyle(sel bool) lipgloss.Style {
@@ -538,7 +494,7 @@ func (m model) edgesOf(sel bool) edges {
 	_, _, dw := columns(m.w)
 	e := edgeStyle(sel)
 	return edges{e.Render("╭" + strings.Repeat("─", dw-4) + "╮"), e.Render("│"),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Background(boxBg).Render("┃")}
+		edgeStyle(true).Render("┃")}
 }
 
 // cell is box line l as drawn in the frame: on the panel colour, padded to inner cells, in colour c when given.
@@ -600,7 +556,7 @@ func (m model) detailLines() []string {
 	return m.detailRows(len(m.detailLayout().rows))
 }
 
-// bodyRows is how many detail lines the pane draws: pane() keeps h lines, less the title and the button row.
+// bodyRows is how many detail lines the pane draws: its h rows less the title and the button row.
 func (m model) bodyRows() int { return max(5, m.h-3) - 2 }
 
 // clampScroll keeps m.scroll within the detail.

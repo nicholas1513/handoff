@@ -2,8 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,38 +23,22 @@ func benchModel(b *testing.B) model {
 	}
 	add := func(it queue.Item, files map[string]string, stdout string) queue.Item {
 		it.Cwd, it.SessionID = cwd, sid
-		if it.Argv == nil {
-			it.Argv = []string{"/usr/bin/true"}
-		}
-		it, err := q.Add(it, files)
-		if err == nil && stdout != "" {
-			if err = q.Claim(it); err == nil {
-				err = q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: time.Now(), Stdout: stdout})
-			}
-		}
-		if err != nil {
-			b.Fatal(err)
+		if it = addItem(b, q, it, files); stdout != "" {
+			finished(b, q, it, queue.Succeeded, stdout)
 		}
 		return it
 	}
 	for i := 0; i < 175; i++ {
 		add(queue.Item{Description: fmt.Sprintf("item%03d", i)}, nil, map[bool]string{true: "ok\n"}[i%2 == 1])
 	}
-	var p, js, out strings.Builder
-	for i := 1; i <= 1000; i++ {
-		fmt.Fprintf(&p, "prompt line %04d\n", i)
-	}
+	var js strings.Builder
 	for i := 1; i <= 5000; i++ {
 		fmt.Fprintf(&js, `"key%04d":%d,`, i, i)
-		fmt.Fprintf(&out, "out%04d some result text\n", i)
 	}
-	q.AddPrompt(queue.Prompt{SessionID: sid, TS: time.Now(), Prompt: p.String()})
-	body := filepath.Join(b.TempDir(), "body.json")
-	if err := os.WriteFile(body, []byte("{"+strings.TrimSuffix(js.String(), ",")+"}"), 0o600); err != nil {
-		b.Fatal(err)
-	}
+	q.AddPrompt(queue.Prompt{SessionID: sid, TS: time.Now(), Prompt: numbered("prompt line %04d", 1000)})
+	body := tempFile(b, "body.json", "{"+strings.TrimSuffix(js.String(), ",")+"}")
 	rich := add(queue.Item{Description: "rich", Argv: []string{"az", "rest", "--method", "put", "--body", "@{file:body.json}"}},
-		map[string]string{"body.json": body}, out.String())
+		map[string]string{"body.json": body}, numbered("out%04d some result text", 5000))
 	m := newModel(q, b.TempDir())
 	for i, it := range m.session().items {
 		if it.ID == rich.ID {
