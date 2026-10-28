@@ -541,7 +541,8 @@ func cell(l string, c lipgloss.TerminalColor, inner int) string {
 	if l != ansi.Strip(l) { // the stdout/stderr label
 		st = st.Bold(true)
 	}
-	l = ansi.Strip(l)
+	// cut to the box: ansi.Wrap leaves some emoji/ZWJ runs wider than asked, which would push the frame out
+	l = ansi.Truncate(ansi.Strip(l), inner, "")
 	if c != nil {
 		st = st.Foreground(c)
 	}
