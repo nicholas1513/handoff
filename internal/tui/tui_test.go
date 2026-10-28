@@ -35,6 +35,31 @@ func TestSanitize(t *testing.T) {
 	}
 }
 
+// TestAgentTextIsDrawnSanitized: text an agent can choose reaches the screen sanitized, and a newline in it can't add
+// a screen row: an invalid queue entry's name, a run's error (it can name an edit's target) and the rules badge (it
+// names the project's settings file).
+func TestAgentTextIsDrawnSanitized(t *testing.T) {
+	q, m := setup(t)
+	cwd := filepath.Join(t.TempDir(), "p\x1b]0;pwned\a")
+	if err := os.MkdirAll(filepath.Join(cwd, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(cwd, ".claude", "settings.json"), []byte(`{"permissions":{"allow":["Bash"]}}`), 0o600)
+	q.WriteSession(queue.Session{SessionID: sid, Cwd: cwd})
+	if err := os.Mkdir(filepath.Join(q.Root, "queue", "bad\nentry\x1b]0;pwned\a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := m.Update(runDone{id: "gone", err: errors.New("/tmp/t\x1b]0;pwned\a changed since the diff was taken")})
+	m = next.(model) // runDone refreshes, so the new session cwd's badge is drawn too
+	if v := m.View(); strings.Contains(v, "\x1b]") || !strings.Contains(ansi.Strip(v), "allowed for Claude") {
+		t.Errorf("the badge or the run's error is drawn raw, or no badge is drawn:\n%q", v)
+	}
+	m, _ = press(m, "j") // onto the invalid entries
+	if v := m.View(); strings.Contains(v, "\x1b]") || len(strings.Split(v, "\n")) != m.h {
+		t.Errorf("an invalid entry's name is drawn raw:\n%q", v)
+	}
+}
+
 func setup(t *testing.T) (*queue.Queue, model) {
 	t.Helper()
 	q := &queue.Queue{Root: t.TempDir()}
