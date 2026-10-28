@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -78,6 +79,36 @@ func TestRefusesModified(t *testing.T) {
 	}
 	if s := q.State(r.Item, time.Now()); s != queue.Modified {
 		t.Fatalf("state = %s, want modified", s)
+	}
+}
+
+// TestRunsAtOnce: a run changes nothing process-wide (no Chdir or Setenv), so runs started together each run in their
+// own item's cwd and record their own result.
+func TestRunsAtOnce(t *testing.T) {
+	q := &queue.Queue{Root: t.TempDir()}
+	var rs []queue.Reviewed
+	for range 8 {
+		it, err := q.Add(queue.Item{Argv: []string{"/bin/pwd", "-P"}, Cwd: t.TempDir(), SessionID: sid}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := q.Snapshot(it.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rs = append(rs, r)
+	}
+	var wg sync.WaitGroup
+	for _, r := range rs {
+		wg.Add(1)
+		go func() { defer wg.Done(); Run(context.Background(), q, r, time.Now()) }()
+	}
+	wg.Wait()
+	for _, r := range rs {
+		want, _ := filepath.EvalSymlinks(r.Item.Cwd)
+		if res, err := q.ReadResult(r.Item); err != nil || res.Stdout != want+"\n" {
+			t.Errorf("run in %s recorded %+v, %v", want, res, err)
+		}
 	}
 }
 
