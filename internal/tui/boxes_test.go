@@ -51,6 +51,7 @@ func withAtt(t *testing.T, m model, pn, rn, an, h int) model {
 		it := *m.item()
 		m.q.Claim(it)
 		m.q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: time.Now(), Stdout: o.String()})
+		m = tickM(m) // drawing reads snapshots: a result written after open shows at the next tick
 	}
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: h})
 	m = next.(model)

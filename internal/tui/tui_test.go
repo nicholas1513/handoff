@@ -865,6 +865,7 @@ func TestOnlyBoxesAreCapped(t *testing.T) {
 	}
 	m.q.Claim(it)
 	m.q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: time.Now(), Stdout: o.String()})
+	m = tickM(m) // drawing reads snapshots: a result written after open shows at the next tick
 	d := ansi.Strip(m.detail())
 	for _, want := range []string{fmt.Sprintf("lines 1–%d of 201", m.capPct(40)), fmt.Sprintf("lines 1–%d of 200", m.capPct(30))} {
 		if !strings.Contains(d, want) {
@@ -917,6 +918,7 @@ func TestResultBoxVisibleOnScreen(t *testing.T) {
 	}
 	m.q.Claim(it)
 	m.q.WriteResult(it, queue.Result{State: queue.Succeeded, RanAt: time.Now(), Stdout: o.String()})
+	m = tickM(m) // drawing reads snapshots: a result written after open shows at the next tick
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
 	m = next.(model)
 	if !strings.Contains(ansi.Strip(m.View()), "lines 1–") {

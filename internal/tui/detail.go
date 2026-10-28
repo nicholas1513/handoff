@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -462,7 +462,7 @@ type wrapKey struct {
 
 var (
 	wraps    memo[wrapKey, []string]
-	attTexts memo[string, string]
+	attTexts memo[queue.FileHash, string]
 )
 
 // wrapLines is s wrapped to w cells, one entry per line.
@@ -472,11 +472,11 @@ func wrapLines(s string, w int) []string {
 	})
 }
 
-// attText is an attachment's snapshot copy as shown: JSON pretty-printed, sanitized. Snapshots never change,
-// so the path is the key.
-func attText(path string) string {
-	return attTexts.get(path, func() string {
-		data, err := os.ReadFile(path)
+// attText is an attachment's snapshot copy as shown: JSON pretty-printed, sanitized. Re-opening an item rewrites
+// its snapshot in place, so the file's hash is part of the key.
+func attText(f queue.FileHash) string {
+	return attTexts.get(f, func() string {
+		data, err := os.ReadFile(f.Path)
 		if err != nil {
 			return sanitize(err.Error())
 		}
@@ -491,7 +491,7 @@ func attText(path string) string {
 // attBox is an attachment's box: the snapshot copy, JSON pretty-printed, sanitized. With attachment wrap off it is
 // always framed, so it can be selected and panned, and its lines are cut at the pan offset (see cutLines).
 func (m model) attBox(name string) box {
-	id, txt := "file:"+name, attText(filepath.Join(m.reviewed.SnapDir, name))
+	id, txt := "file:"+name, m.data.atts[name]
 	if m.settings.AttachmentWrap {
 		return m.mkBox(id, wrapText(txt), m.capPct(30))
 	}
@@ -504,12 +504,74 @@ func (m model) attBox(name string) box {
 	return b
 }
 
-// detailSegs is the detail in order: text runs and the Result, prompt and attachment boxes.
-func (m model) detailSegs() []seg {
-	s := m.session()
-	if s != nil && s.invalid != nil && m.ii < len(s.invalid) {
+// detailData is everything the detail shows from disk and the clock. loadData reads it when an item opens (so at
+// each tick too) and after this viewer acts on an item; drawing reads only this. Never modified once set.
+type detailData struct {
+	state, expires string // the selected item's state, and "expires in" while pending
+	invalid        bool   // the selection is an item that failed to load
+	loadErr        string
+	verified       bool   // the session has a hook record
+	cwd            string // the session's, when verified
+	res            *queue.Result
+	resErr         string // the result is unreadable (not just missing)
+	prompt         *queue.Prompt
+	problems       []string
+	badge          rules.Badge
+	sizes          map[string]int    // attachment sizes by name
+	atts           map[string]string // attachment text as shown, by name; not for edit items
+}
+
+// loadData re-reads the detail's data, keeping the old snapshot when nothing changed so caches keyed on it hold.
+func (m *model) loadData() {
+	d, s, now := &detailData{}, m.session(), time.Now()
+	switch r := m.reviewed; {
+	case s != nil && s.invalid != nil && m.ii < len(s.invalid):
 		_, err := m.q.Load(s.invalid[m.ii])
-		return []seg{{text: warn.Render("This item failed to load and can't be run.") + "\n\n" + sanitize(fmt.Sprint(err))}}
+		d.invalid, d.loadErr = true, fmt.Sprint(err)
+	case r != nil:
+		it := r.Item
+		if d.state = m.q.State(it, now); d.state == queue.Pending {
+			d.expires = strings.TrimSuffix(it.Expires.Sub(now).Round(time.Minute).String(), "0s")
+		}
+		project := it.Cwd
+		if d.verified = s != nil && s.sess != nil; d.verified {
+			d.cwd, project = s.sess.Cwd, s.sess.Cwd
+			if pr, err := m.q.PromptBefore(it.SessionID, it.Created); err == nil {
+				d.prompt = &pr
+			}
+		}
+		settings := rules.Load(rules.DefaultFiles(m.home, project))
+		d.problems, d.badge = settings.Problems, settings.Check(it.Argv)
+		if res, err := m.q.ReadResult(it); err == nil {
+			d.res = &res
+		} else if !errors.Is(err, os.ErrNotExist) {
+			d.resErr = err.Error()
+		}
+		d.sizes, d.atts = map[string]int{}, map[string]string{}
+		for _, f := range r.FileHashes[1:] { // item.json, then the attachments in it.Files order
+			if fi, err := os.Stat(f.Path); err == nil {
+				d.sizes[f.Name] = int(fi.Size())
+			}
+			if it.Edit == "" { // an edit's attachment is shown as the Diff instead
+				d.atts[f.Name] = attText(f)
+			}
+		}
+	default:
+		if it := m.item(); it != nil {
+			d.state = m.q.State(*it, now)
+		}
+	}
+	if !reflect.DeepEqual(d, m.data) {
+		m.data = d
+	}
+}
+
+// detailSegs is the detail in order: text runs and the Result, prompt and attachment boxes. It reads m.data, never
+// the disk or the clock.
+func (m model) detailSegs() []seg {
+	d := m.data
+	if d.invalid {
+		return []seg{{text: warn.Render("This item failed to load and can't be run.") + "\n\n" + sanitize(d.loadErr)}}
 	}
 	if m.openErr != nil {
 		return []seg{{text: warn.Render("Could not open item: ") + sanitize(m.openErr.Error())}}
@@ -533,7 +595,7 @@ func (m model) detailSegs() []seg {
 		atts = append(atts, m.attBox(name))
 	}
 
-	state := m.q.State(it, time.Now())
+	state := m.drawnState()
 	chips := []string{chip(strings.ToUpper(state), resColor(state))}
 	if mt := methodOf(it.Argv); mt != "" {
 		c := ""
@@ -545,23 +607,18 @@ func (m model) detailSegs() []seg {
 		}
 		chips = append(chips, chip(sanitize(mt), c))
 	}
-	verified := s != nil && s.sess != nil
+	verified := d.verified
 	if verified {
 		chips = append(chips, ok.Render("✓ verified"))
 	} else {
 		chips = append(chips, warn.Render("⚠ unverified session"))
 	}
 	if state == queue.Pending {
-		chips = append(chips, dim.Render("expires in "+strings.TrimSuffix(time.Until(it.Expires).Round(time.Minute).String(), "0s")))
+		chips = append(chips, dim.Render("expires in "+d.expires))
 	}
 	p("%s\n", strings.Join(chips, "  "))
 	p("%s\n", bold.Render(sanitize(it.Description)))
 
-	project := it.Cwd
-	if verified {
-		project = s.sess.Cwd
-	}
-	settings := rules.Load(rules.DefaultFiles(m.home, project))
 	if m.changed {
 		p("%s", warn.Render("Changed on disk after you opened it. Press o to review it again."))
 	}
@@ -571,11 +628,11 @@ func (m model) detailSegs() []seg {
 	if runner.RunsInterpreter(it.Argv) {
 		p("%s", warn.Render(fmt.Sprintf("⚠ runs an interpreter (%s): its arguments are code", sanitize(it.Argv[0]))))
 	}
-	for _, pr := range settings.Problems {
+	for _, pr := range d.problems {
 		p("%s", warn.Render("settings problem: "+sanitize(pr)))
 	}
 
-	if res, err := m.q.ReadResult(it); err == nil {
+	if res := d.res; res != nil {
 		p("\n%s", heading("Result"))
 		p("%s exit %d at %s", chip(strings.ToUpper(res.State), resColor(res.State)), res.ExitCode, res.RanAt.Format(time.Kitchen))
 		addBox(m.mkBox(resultBox, func(w int) (out []string) {
@@ -587,19 +644,13 @@ func (m model) detailSegs() []seg {
 			}
 			return out
 		}, m.capPct(40)))
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if d.resErr != "" {
 		p("\n%s", heading("Result"))
-		p("%s", warn.Render(sanitize(err.Error())))
+		p("%s", warn.Render(sanitize(d.resErr)))
 	}
 
-	sizes := map[string]int{}
-	for _, name := range it.Files {
-		if fi, err := os.Stat(filepath.Join(m.reviewed.SnapDir, name)); err == nil {
-			sizes[name] = int(fi.Size())
-		}
-	}
 	p("\n%s", heading("Command"))
-	for _, l := range commandLines(it.Argv, sizes) {
+	for _, l := range commandLines(it.Argv, d.sizes) {
 		p("%s", l)
 	}
 
@@ -617,14 +668,14 @@ func (m model) detailSegs() []seg {
 
 	p("\n%s", heading("Why"))
 	if verified {
-		if pr, err := m.q.PromptBefore(it.SessionID, it.Created); err == nil {
+		if pr := d.prompt; pr != nil {
 			p("%s you said:", dim.Render(pr.TS.Format("15:04")))
 			addBox(m.mkBox(promptBox, wrapText(sanitize(pr.Prompt)), m.capPct(20)))
 		} else {
 			p("%s", warn.Render("no prompt recorded"))
 		}
 		p("%s %s", ok.Render("✓ verified"), sanitize(it.SessionID))
-		p("%s", dim.Render("session cwd ")+sanitize(s.sess.Cwd))
+		p("%s", dim.Render("session cwd ")+sanitize(d.cwd))
 	}
 	why := []string{}
 	if it.Reason != "" {
@@ -634,7 +685,7 @@ func (m model) detailSegs() []seg {
 	if m.home != "" && (cwd == m.home || strings.HasPrefix(cwd, m.home+"/")) {
 		cwd = "~" + strings.TrimPrefix(cwd, m.home)
 	}
-	why = append(why, settings.Check(it.Argv).String(m.home), cwd)
+	why = append(why, d.badge.String(m.home), cwd)
 	p("%s", dim.Render(strings.Join(why, " · ")))
 
 	for _, a := range atts {
