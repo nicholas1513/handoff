@@ -190,6 +190,47 @@ func TestArmThenNotPendingLeavesNoStuckArm(t *testing.T) {
 	}
 }
 
+// TestPromptsOnlyForWhatIsDrawn: until the next refresh the disk can say what the screen doesn't (a revoke undone,
+// another viewer starting the item). Space, c and the button row then arm nothing, so a second press can't answer a
+// prompt that was never drawn.
+func TestPromptsOnlyForWhatIsDrawn(t *testing.T) {
+	q, m := setup(t)
+	sw, iw, _ := columns(m.w)
+	it := *m.item()
+	if err := q.Revoke(it, sid); err != nil {
+		t.Fatal(err)
+	}
+	m = tickM(m) // drawn as revoked
+	if err := os.Remove(filepath.Join(q.Root, "queue", it.ID, "revoked")); err != nil {
+		t.Fatal(err)
+	}
+	m2, _ := press(m, " ")
+	if _, cmd := press(m2, " "); cmd != nil {
+		t.Error("space space ran an item drawn as revoked")
+	}
+	m2, _ = click(m, sw+iw+runX+1, buttonY)
+	if _, cmd := click(m2, sw+iw+yesX+1, buttonY); cmd != nil {
+		t.Error("two clicks on the button row ran an item drawn as revoked")
+	}
+
+	for what, do := range map[string]func(model){
+		"c c": func(m model) { m, _ = press(m, "c"); press(m, "c") },
+		"two clicks on the button row": func(m model) {
+			m, _ = click(m, sw+iw+runX+1, buttonY)
+			click(m, sw+iw+yesCancelX+1, buttonY)
+		},
+	} {
+		q, m := setup(t)
+		it := *m.item()
+		if err := q.Claim(it); err != nil { // drawn as pending until the next tick
+			t.Fatal(err)
+		}
+		if do(m); q.State(it, time.Now()) != queue.Running {
+			t.Errorf("%s on an item drawn as pending canceled another viewer's run", what)
+		}
+	}
+}
+
 func TestRejectAdvancesToOldestPending(t *testing.T) {
 	_, m := setup(t) // "second" (newest) is selected, "first" is older
 	m, _ = press(m, "x")
