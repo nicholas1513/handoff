@@ -29,7 +29,9 @@ It does the following, and is safe to re-run:
    shows a diff and asks first, and keeps a timestamped backup (`--yes` skips the question). It
    warns if `allowWrite` already includes all of `~/.handoff`. That would let the agent write the
    hook-owned `sessions/` and `snap/` folders, which is what keeps provenance and reviewed files
-   trustworthy.
+   trustworthy. It also adds `"~/.handoff/snap"` and `"~/.handoff/review"` to
+   `sandbox.filesystem.denyRead`: the viewer copies files there that the agent may not be able to
+   read (an edit's current target, a repo's checkout). Re-run it to add these to an existing setup.
 4. Installs the Claude Code plugin at user scope. It adds this repo as a local marketplace (from
    `.claude-plugin/marketplace.json`) and runs `claude plugin install handoff@handoff`. The
    marketplace points at this checkout, so edits to `plugin/` take effect without reinstalling,
@@ -124,6 +126,7 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 | Agent forges which prompt or session asked for it | Hooks run outside the sandbox and write `~/.handoff/sessions/`, which the sandbox can't. The viewer reads provenance from there and marks sessions with no hook record **unverified**. |
 | Shell injection | argv is executed directly, never through a shell. Interpreters (`bash -c`, `python -c`, `env`, `xargs`, …) are flagged. |
 | Item or attachment changed after review | The viewer hashes what it showed and copies attachments to `~/.handoff/snap/`. Run re-verifies the hash, refuses with `modified` if it changed, and passes the snapshot paths, not the live files. |
+| Agent has the viewer read a file for it | `item.json` and attachments are read only as plain files: a symlink anywhere under `queue/<id>`, a hard link or a FIFO makes the item invalid. Setup denies the agent reads of `snap/` and `review/`, where the viewer copies what it read for review. |
 | Handed-over commits drawn differently from what `git am` applies | The viewer doesn't parse the patch: it draws git's own result of `git am` on the reviewed copy, in a review copy of the repo with no hooks, no filters and none of its config but `am.*`, `mailinfo.*`, `i18n.*`, `apply.*` and `core.whitespace`, overriding attributes and submodule settings that hide a change from the diff. Run refuses with `modified` if the repo's HEAD moved since or another repo is at its path. It pins HEAD and runs `git am` as the review copy does: with replace refs, hooks, the fsmonitor, commit signing and lazy fetches off; filter and merge drivers in the repo's config, which the run may still run, are drawn as a warning. It reports `failed` if `git am` made any commit the review copy didn't (tree, author, date or message) or any object its commits added doesn't hash to its id, also where `git am` stopped or failed in the review copy (an object file or setting changed since). `git am` in any other form gets no review copy and a warning. |
 | Edit diff shows one file but writes another | An edit item's argv must be exactly `/bin/cp {file:proposed} <target>` for its own absolute target, or it fails to load. Run also refuses if the target's hash differs from when the diff was taken. |
 | Run twice / run after reject | A claim file is created exclusively before running or rejecting. |
@@ -144,7 +147,7 @@ real prompt and directory, so a mismatch is visible but not blocked.
   sessions/<sid>/session.json               SessionStart hook
   sessions/<sid>/prompts/<ts>.json          UserPromptSubmit hook, newest 20 kept
   sessions/<sid>/results/<id>.json|.claim   viewer (.claim holds the run's pid once started)
-  snap/<id>/<name>                          viewer: reviewed attachments
+  snap/<id>/<name>                          viewer: reviewed attachments (the agent can't read snap/ or review/)
   review/<id>-<n>/                          viewer: review copies of git am items, a new one per build, removed at startup once finished
   hook.log                                  hooks: one line per call (no prompt text)
 ```
