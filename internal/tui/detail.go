@@ -232,11 +232,26 @@ func (m model) render(b box, sel bool) string {
 	if !b.framed {
 		return strings.Join(b.lines, "\n") + "\n"
 	}
-	var colors []lipgloss.TerminalColor
-	for _, d := range b.meta[min(b.top, len(b.meta)):min(b.top+b.cap, len(b.meta))] {
-		colors = append(colors, d.color)
+	_, _, dw := columns(m.w)
+	e := m.edgesOf(sel)
+	out := []string{e.top}
+	pos, n := thumb(b.cap, len(b.lines), b.top)
+	for i := range b.cap {
+		g := e.side
+		if i >= pos && i < pos+n {
+			g = e.thumb
+		}
+		out = append(out, e.side+cell(b.lines[b.top+i], b.colorAt(b.top+i), dw-6)+g+e.side)
 	}
-	return m.frame(b.lines[b.top:b.top+b.cap], b.top, len(b.lines), sel, colors) + "\n"
+	return strings.Join(append(out, m.foot(b.top, b.cap, len(b.lines), sel)), "\n") + "\n"
+}
+
+// colorAt is line k's foreground: the diff's per-line colour, else nil.
+func (b box) colorAt(k int) lipgloss.TerminalColor {
+	if k < len(b.meta) {
+		return b.meta[k].color
+	}
+	return nil
 }
 
 // placed is a framed box and its first content row in the wrapped detail.
@@ -248,7 +263,29 @@ type placed struct {
 // renderCache is the detail's derived state, held by pointer so every copy of the model shares it. An entry keeps
 // the inputs it was built from and is rebuilt when they differ, so nothing has to remember to invalidate it.
 type renderCache struct {
-	lay *detailLayout
+	lay  *detailLayout
+	hdr  once[styleKey, string]
+	foot once[styleKey, footLine]
+}
+
+// once is a single-entry cache: the value built for the last key asked for.
+type once[K comparable, V any] struct {
+	key K
+	ok  bool
+	v   V
+}
+
+func (c *once[K, V]) get(k K, f func() V) V {
+	if !c.ok || c.key != k {
+		c.key, c.ok, c.v = k, true, f()
+	}
+	return c.v
+}
+
+// styleKey is a short plain text and what styling it depends on.
+type styleKey struct {
+	text, status string
+	look         look
 }
 
 func newRenderCache() *renderCache { return &renderCache{} }
@@ -278,8 +315,11 @@ type detailLayout struct {
 	diffExp map[int][2]int
 	boxX    map[string]int
 	segs    []seg
-	boxes   []placed // framed, in display order, at top 0
-	rows    []string // every body row, wrapped and padded to dw-2; "" where a framed box draws its own
+	boxes   []placed   // framed, in display order, at top 0
+	rows    []string   // every body row, wrapped and padded to dw-2; "" where a framed box draws its own
+	blank   string     // a row past the end
+	edges   [2]edges   // by selection
+	cells   [][]string // per framed box, each line as drawn by cell; filled as lines are first drawn
 }
 
 // detailLayout is the cached detail while the model's inputs are unchanged, else a new build of it.
@@ -291,7 +331,9 @@ func (m model) detailLayout() *detailLayout {
 	if d := m.rc.lay; d != nil && d.key == k && maps.Equal(d.diffExp, m.diffExp) && maps.Equal(d.boxX, m.boxX) {
 		return d
 	}
-	d, c := &detailLayout{key: k, diffExp: m.diffExp, boxX: m.boxX}, m
+	_, _, dw := columns(m.w)
+	d, c := &detailLayout{key: k, diffExp: m.diffExp, boxX: m.boxX, blank: strings.Repeat(" ", dw-2)}, m
+	d.edges = [2]edges{m.edgesOf(false), m.edgesOf(true)}
 	c.boxTop = nil // built at top 0: tops are applied when drawing
 	d.segs = c.detailSegs()
 	for _, s := range d.segs {
@@ -300,6 +342,7 @@ func (m model) detailLayout() *detailLayout {
 			d.rows = append(d.rows, strings.Split(m.wrapDetail(strings.TrimSuffix(s.text, "\n")), "\n")...)
 		case s.box.framed:
 			d.boxes = append(d.boxes, placed{*s.box, len(d.rows) + 1})
+			d.cells = append(d.cells, make([]string, len(s.box.lines)))
 			d.rows = append(d.rows, make([]string, s.box.cap+2)...)
 		default:
 			d.rows = append(d.rows, strings.Split(m.wrapDetail(strings.Join(s.box.lines, "\n")), "\n")...)
@@ -337,15 +380,66 @@ func (m model) layout() (l layout) {
 		b.box = m.atTop(b.box)
 		l.boxes = append(l.boxes, b)
 	}
-	for _, b := range l.boxes {
-		if l.sel == "" || b.id == m.boxSel {
-			l.sel = b.id
+	l.sel = m.selIn(d.boxes)
+	return l
+}
+
+// selIn is the selected framed box: m.boxSel while it is framed, else the first framed box, else "".
+func (m model) selIn(boxes []placed) (sel string) {
+	for _, b := range boxes {
+		if sel == "" || b.id == m.boxSel {
+			sel = b.id
 		}
 		if b.id == m.boxSel {
 			break
 		}
 	}
-	return l
+	return sel
+}
+
+// detailRows is the n body rows from the scroll offset, each exactly dw-2 cells. Only these rows are built: a framed
+// box's row is its pre-styled edges around a cached cell.
+func (m model) detailRows(n int) []string {
+	d := m.detailLayout()
+	sel, top := m.selIn(d.boxes), m.bodyTop(len(d.rows))
+	out := make([]string, 0, n)
+	for r := top; r < top+n; r++ {
+		out = append(out, m.rowAt(d, r, sel))
+	}
+	return out
+}
+
+func (m model) rowAt(d *detailLayout, r int, sel string) string {
+	if r >= len(d.rows) {
+		return d.blank
+	}
+	for bi, b := range d.boxes {
+		i := r - b.first // -1 the top border, cap the bottom one
+		if i < -1 || i > b.cap {
+			continue
+		}
+		e, top := d.edges[0], m.atTop(b.box).top
+		if b.id == sel {
+			e = d.edges[1]
+		}
+		switch i {
+		case -1:
+			return e.top
+		case b.cap:
+			return m.foot(top, b.cap, len(b.lines), b.id == sel)
+		}
+		k, c := top+i, d.cells[bi]
+		if c[k] == "" {
+			_, _, dw := columns(m.w)
+			c[k] = cell(b.lines[k], b.colorAt(k), dw-6)
+		}
+		g := e.side
+		if pos, n := thumb(b.cap, len(b.lines), top); i >= pos && i < pos+n {
+			g = e.thumb
+		}
+		return e.side + c[k] + g + e.side
+	}
+	return d.rows[r]
 }
 
 // box returns the box with that id, if drawn.
@@ -396,60 +490,69 @@ func with[K comparable, V any](mp map[K]V, k K, v V) map[K]V {
 // box returns the box with that id, if drawn.
 func (m model) box(id string) (box, bool) { return m.layout().box(id) }
 
-// scrollbar is one glyph per row of a cap-row window over total lines starting at top: a dim track and a thumb sized
+// thumb is the scrollbar thumb of a cap-row window over total lines starting at top: its first row and length, sized
 // and placed in proportion, touching the bottom at the last page. total <= cap gives an all-thumb bar.
+func thumb(cap, total, top int) (pos, n int) {
+	if total <= cap {
+		return 0, cap
+	}
+	n = max(1, min(cap, int(float64(cap*cap)/float64(total)+0.5)))
+	pos = int(float64(top)*float64(cap-n)/float64(total-cap) + 0.5)
+	return max(0, min(pos, cap-n)), n
+}
+
+// scrollbar is one glyph per row of a cap-row window: a dim track and the thumb.
 func scrollbar(cap, total, top int) []string {
-	thumb := cap
-	if total > cap {
-		thumb = max(1, min(cap, int(float64(cap*cap)/float64(total)+0.5)))
-	}
-	pos := 0
-	if total > cap {
-		pos = int(float64(top)*float64(cap-thumb)/float64(total-cap) + 0.5)
-		pos = max(0, min(pos, cap-thumb))
-	}
+	pos, n := thumb(cap, total, top)
 	bar := make([]string, cap)
 	for i := range bar {
 		bar[i] = "│"
-		if i >= pos && i < pos+thumb {
+		if i >= pos && i < pos+n {
 			bar[i] = "┃"
 		}
 	}
 	return bar
 }
 
-// frame draws the visible slice of a long result as a scrollable panel: rounded border, scrollbar in the last
-// inner column, and the line range in the bottom border. Its width is dw-2, the detail wrap width.
-// colors, when given, is each row's foreground (the diff box's, so wrapped continuations match their line).
-func (m model) frame(rows []string, top, total int, sel bool, colors []lipgloss.TerminalColor) string {
-	_, _, dw := columns(m.w)
-	outer, inner := dw-2, dw-6
-	edge := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(boxBg)
+// A framed box is a scrollable panel dw-2 wide (the detail wrap width): rounded border, a scrollbar in the last
+// inner column, and the line range in the bottom border.
+
+// edges are a framed box's border pieces, styled for its selection state: the top border, a side (also the
+// scrollbar's track) and the scrollbar's thumb.
+type edges struct{ top, side, thumb string }
+
+func edgeStyle(sel bool) lipgloss.Style {
 	if sel {
-		edge = edge.Foreground(lipgloss.Color("#7aa2f7"))
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Background(boxBg)
 	}
-	txt := lipgloss.NewStyle().Background(boxBg)
-	thumb := lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Background(boxBg)
-	bar := scrollbar(len(rows), total, top)
-	out := []string{edge.Render("╭" + strings.Repeat("─", outer-2) + "╮")}
-	for i, l := range rows {
-		st := txt
-		if l != ansi.Strip(l) { // the stdout/stderr label
-			st = st.Bold(true)
-		}
-		l = ansi.Strip(l)
-		if i < len(colors) {
-			st = st.Foreground(colors[i])
-		}
-		bs := edge
-		if bar[i] == "┃" {
-			bs = thumb
-		}
-		out = append(out, edge.Render("│")+st.Render(" "+l+strings.Repeat(" ", max(0, inner-lipgloss.Width(l))))+bs.Render(bar[i])+edge.Render("│"))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(boxBg)
+}
+
+func (m model) edgesOf(sel bool) edges {
+	_, _, dw := columns(m.w)
+	e := edgeStyle(sel)
+	return edges{e.Render("╭" + strings.Repeat("─", dw-4) + "╮"), e.Render("│"),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#7aa2f7")).Background(boxBg).Render("┃")}
+}
+
+// cell is box line l as drawn in the frame: on the panel colour, padded to inner cells, in colour c when given.
+func cell(l string, c lipgloss.TerminalColor, inner int) string {
+	st := lipgloss.NewStyle().Background(boxBg)
+	if l != ansi.Strip(l) { // the stdout/stderr label
+		st = st.Bold(true)
 	}
-	foot := ansi.Truncate(fmt.Sprintf("lines %d–%d of %d", top+1, top+len(rows), total), outer-6, "…")
-	out = append(out, edge.Render("╰─ "+foot+" "+strings.Repeat("─", max(0, outer-6-lipgloss.Width(foot)))+"─╯"))
-	return strings.Join(out, "\n")
+	l = ansi.Strip(l)
+	if c != nil {
+		st = st.Foreground(c)
+	}
+	return st.Render(" " + l + strings.Repeat(" ", max(0, inner-lipgloss.Width(l))))
+}
+
+// foot is the bottom border, with the range of lines shown.
+func (m model) foot(top, n, total int, sel bool) string {
+	_, _, dw := columns(m.w)
+	f := ansi.Truncate(fmt.Sprintf("lines %d–%d of %d", top+1, top+n, total), dw-8, "…")
+	return edgeStyle(sel).Render("╰─ " + f + " " + strings.Repeat("─", max(0, dw-8-lipgloss.Width(f))) + "─╯")
 }
 
 // scrollBox moves the box with that id by d lines, clamped to its text.
@@ -484,11 +587,10 @@ func (m model) wrapDetail(s string) string {
 	return lipgloss.NewStyle().Width(dw - 2).Render(s)
 }
 
-// detailLines is the wrapped detail, one entry per drawn line.
-func (m model) detailLines() []string { return m.linesOf(m.layout()) }
-
-func (m model) linesOf(l layout) []string {
-	return strings.Split(m.wrapDetail(strings.TrimSuffix(m.detailOf(l), "\n")), "\n")
+// detailLines is the whole detail as drawn, one entry per row.
+func (m model) detailLines() []string {
+	m.scroll = 0
+	return m.detailRows(len(m.detailLayout().rows))
 }
 
 // bodyRows is how many detail lines the pane draws: pane() keeps h lines, less the title and the button row.
