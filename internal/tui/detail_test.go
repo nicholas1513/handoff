@@ -195,6 +195,26 @@ func TestPullFromLocalPathWarns(t *testing.T) {
 	}
 }
 
+// TestOtherAmWarns: git am in any other form than an am item's gets no review copy, so the patch would be drawn only
+// raw, where a MIME part can hide what git applies: the item says so.
+func TestOtherAmWarns(t *testing.T) {
+	patch := tempFile(t, "p", "x")
+	for argv, want := range map[string]bool{
+		"git -C r am {file:p}": false, "git am {file:p}": false, "git -C r pull /tmp/x": false, "git -C r log": false,
+		"git -C r am --quiet {file:p}": true, "/usr/bin/git -C r am {file:p}": true, "git -c x=y am {file:p}": true,
+		"git -C r am {file:q}": true, "git -C r am /tmp/x.patch": true, "git am --continue": true,
+		"/usr/libexec/git-core/git-am {file:p}": true, "xcrun git -C r am {file:p}": true, "GIT -C r am {file:p}": true,
+		"arch -arm64 /usr/bin/git am {file:p}": true, "git-log": false,
+	} {
+		_, m := setup(t)
+		m = withItem(t, m, queue.Item{Description: "x", Argv: strings.Fields(argv)}, map[string]string{"p": patch}, 200)
+		const warning = "⚠ git am with other options: the patch isn't drawn as git applies it"
+		if got := strings.Contains(ansi.Strip(m.detail()), warning); got != want {
+			t.Errorf("%s: warned %v", argv, got)
+		}
+	}
+}
+
 func TestDetailNarrowTerminal(t *testing.T) {
 	_, m := setup(t)
 	argv := []string{"az", "rest", "--method", "put", "--url", "https://dev.azure.com/Org/Example%20Proj/_apis/dashboard/dashboards/3c9a1f2e-7b4d-4e8a-9f61-2d5c8b0e7a43?api-version=7.1-preview.3"}
