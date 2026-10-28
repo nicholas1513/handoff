@@ -156,37 +156,69 @@ func methodOf(argv []string) string {
 	return mt
 }
 
-// pullsLocalPath: argv is git pull or fetch from a directory rather than a remote, so the reviewer sees a path, not the
-// changes, and the directory can change between review and run.
-func pullsLocalPath(argv []string) bool {
-	if len(argv) == 0 || filepath.Base(argv[0]) != "git" {
-		return false
+// gitArgs is argv's git subcommand and its arguments, after git's own options, nil when argv isn't git; and whether
+// those options set a remote's URL, a URL rewrite or an alias, which can point anywhere. A file system that ignores
+// case runs GIT as git, and git-<sub> (as in git's exec path) is git <sub>.
+func gitArgs(argv []string) (sub []string, redirects bool) {
+	if len(argv) == 0 {
+		return nil, false
+	}
+	if name := strings.ToLower(filepath.Base(argv[0])); name != "git" {
+		if s, ok := strings.CutPrefix(name, "git-"); ok {
+			return append([]string{s}, argv[1:]...), false
+		}
+		return nil, false
 	}
 	i := 1
 	for ; i < len(argv) && strings.HasPrefix(argv[i], "-"); i++ { // git's own options
-		if v, ok := strings.CutPrefix(argv[i], "--config-env="); ok && pullsLocalPath([]string{"git", "-c", v}) {
-			return true // the attached form, read as -c reads its name=value
+		if v, ok := strings.CutPrefix(argv[i], "--config-env="); ok {
+			_, r := gitArgs([]string{"git", "-c", v}) // the attached form, read as -c reads its name=value
+			redirects = redirects || r
 		}
 		switch argv[i] {
-		case "-c", "--config-env": // a remote's URL, a URL rewrite or an alias set here can point anywhere
+		case "-c", "--config-env":
 			if v := strings.ToLower(argv[min(i+1, len(argv)-1)]); strings.HasPrefix(v, "remote.") ||
 				strings.HasPrefix(v, "url.") || strings.HasPrefix(v, "alias.") {
-				return true
+				redirects = true
 			}
 			i++
 		case "-C", "--git-dir", "--work-tree", "--namespace", "--attr-source":
 			i++ // and their value
 		}
 	}
-	if i >= len(argv) || argv[i] != "pull" && argv[i] != "fetch" {
+	return argv[min(i, len(argv)):], redirects
+}
+
+// pullsLocalPath: argv is git pull or fetch from a directory rather than a remote, so the reviewer sees a path, not the
+// changes, and the directory can change between review and run.
+func pullsLocalPath(argv []string) bool {
+	sub, redirects := gitArgs(argv)
+	if redirects {
+		return true
+	}
+	if len(sub) == 0 || sub[0] != "pull" && sub[0] != "fetch" {
 		return false
 	}
-	for j := i + 1; j < len(argv); j++ { // a refspec never looks like a path, so any word that does is the repository
-		switch a := argv[j]; {
+	for j := 1; j < len(sub); j++ { // a refspec never looks like a path, so any word that does is the repository
+		switch a := sub[j]; {
 		case a == "--upload-pack" || a == "-o" || a == "--server-option":
 			j++ // its value is a program or a string, not the repository
 		case strings.HasPrefix(a, "/") || strings.HasPrefix(a, ".") && a != "." || // no remote or ref starts with "."
 			strings.HasPrefix(a, "~") || strings.HasPrefix(a, "file://"):
+			return true
+		}
+	}
+	return false
+}
+
+// otherAm: argv is git am in another form than an am item's (queue.Am), which gets no review copy, so what it applies
+// is drawn only as the raw patch, if at all. git may come after a program that runs it (xcrun, arch, caffeinate…).
+func otherAm(it queue.Item) bool {
+	if _, _, am := queue.Am(it); am {
+		return false
+	}
+	for i := range it.Argv {
+		if sub, _ := gitArgs(it.Argv[i:]); len(sub) > 0 && sub[0] == "am" {
 			return true
 		}
 	}
@@ -850,6 +882,10 @@ func (m model) detailSegs() []seg {
 	}
 	if pullsLocalPath(it.Argv) {
 		p("%s", warn.Render("⚠ pulls from a local path: the changes aren't shown here; ask for a patch (git am) instead"))
+	}
+	if otherAm(it) {
+		p("%s", warn.Render("⚠ git am with other options: the patch isn't drawn as git applies it; ask for exactly "+
+			"git -C <repo> am {file:…}"))
 	}
 	for _, pr := range d.problems {
 		p("%s", warn.Render("settings problem: "+sanitize(pr)))
