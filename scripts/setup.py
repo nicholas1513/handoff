@@ -57,11 +57,15 @@ def add_allow_write(settings, entry, home):
 
 
 def add_deny_read(settings, home):
-    """Add DENY_READ to sandbox.filesystem.denyRead in place. Returns whether any entry was added."""
+    """Add DENY_READ to sandbox.filesystem.denyRead and as Read(...) deny rules in place: denyRead stops sandboxed
+    commands only, and Claude's Read tool follows permission rules. Returns whether any entry was added."""
     deny = settings.setdefault("sandbox", {}).setdefault("filesystem", {}).setdefault("denyRead", [])
     added = [e for e in DENY_READ if e not in deny and e.replace("~", str(home), 1) not in deny]
     deny.extend(added)
-    return bool(added)
+    rules = settings.setdefault("permissions", {}).setdefault("deny", [])
+    new_rules = [f"Read({e}/**)" for e in DENY_READ if f"Read({e}/**)" not in rules]
+    rules.extend(new_rules)
+    return bool(added or new_rules)
 
 
 class Setup:
@@ -147,7 +151,7 @@ class Setup:
         self._out("created ~/.handoff/queue")
 
     def allow_queue_writes(self):
-        self.step("4. Sandbox access: write only the queue, read neither snap/ nor review/")
+        self.step("4. Agent access: write only the queue, read neither snap/ nor review/")
         path = self.settings_path
         before = path.read_text() if path.exists() else ""
         settings = json.loads(before) if before.strip() else {}
@@ -159,7 +163,7 @@ class Setup:
                 f"  sessions/ and snap/ folders and forge provenance. Narrow it to {QUEUE_ENTRY}."
             )
         if not changed:
-            self._out(f"{QUEUE_ENTRY} is already in allowWrite, and {' and '.join(DENY_READ)} in denyRead")
+            self._out(f"{QUEUE_ENTRY} is already in allowWrite, and {' and '.join(DENY_READ)} are denied reads")
             return
 
         # json keeps key order, so the diff shows only the added entry (plus any reformatting).
@@ -169,7 +173,7 @@ class Setup:
                 before.splitlines(keepends=True), after.splitlines(keepends=True), str(path), str(path) + " (new)")))
         if not self.assume_yes and not self._ask(f"Apply this change to {path}? [y/N] ").strip().lower().startswith("y"):
             raise SetupError(f'not changed. Add "{QUEUE_ENTRY}" to sandbox.filesystem.allowWrite and '
-                             f'{json.dumps(list(DENY_READ))} to sandbox.filesystem.denyRead yourself.')
+                             f'{json.dumps(list(DENY_READ))} to sandbox.filesystem.denyRead (and Read(<path>/**) to permissions.deny) yourself.')
 
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():

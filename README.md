@@ -30,8 +30,10 @@ It does the following, and is safe to re-run:
    warns if `allowWrite` already includes all of `~/.handoff`. That would let the agent write the
    hook-owned `sessions/` and `snap/` folders, which is what keeps provenance and reviewed files
    trustworthy. It also adds `"~/.handoff/snap"` and `"~/.handoff/review"` to
-   `sandbox.filesystem.denyRead`: the viewer copies files there that the agent may not be able to
-   read (an edit's current target, a repo's checkout). Re-run it to add these to an existing setup.
+   `sandbox.filesystem.denyRead`, which covers the agent's shell commands, and denies its Read tool
+   the same folders with `Read(~/.handoff/snap/**)` and `Read(~/.handoff/review/**)` in
+   `permissions.deny`: the viewer copies files there that the agent may not be able to read (an
+   edit's current target, a repo's checkout). Re-run it to add these to an existing setup.
 4. Installs the Claude Code plugin at user scope. It adds this repo as a local marketplace (from
    `.claude-plugin/marketplace.json`) and runs `claude plugin install handoff@handoff`. The
    marketplace points at this checkout, so edits to `plugin/` take effect without reinstalling,

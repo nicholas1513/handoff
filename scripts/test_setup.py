@@ -57,7 +57,14 @@ class AddDenyReadTest(unittest.TestCase):
         s = {"sandbox": {"filesystem": {"denyRead": ["~/.azure", "/home/u/.handoff/snap"]}}}
         self.assertTrue(add_deny_read(s, self.home))
         self.assertEqual(s["sandbox"]["filesystem"]["denyRead"], ["~/.azure", "/home/u/.handoff/snap", "~/.handoff/review"])
+        self.assertEqual(s["permissions"]["deny"], ["Read(~/.handoff/snap/**)", "Read(~/.handoff/review/**)"])
         self.assertFalse(add_deny_read(s, self.home))
+
+    def test_read_tool_rule_added_even_when_sandbox_entries_exist(self):
+        # denyRead stops sandboxed commands only; the Read tool follows permission rules
+        s = {"sandbox": {"filesystem": {"denyRead": list(DENY_READ)}}, "permissions": {"deny": ["Read(~/.azure/**)"]}}
+        self.assertTrue(add_deny_read(s, self.home))
+        self.assertEqual(s["permissions"]["deny"], ["Read(~/.azure/**)", "Read(~/.handoff/snap/**)", "Read(~/.handoff/review/**)"])
 
 
 class SetupStepsTest(unittest.TestCase):
@@ -76,6 +83,8 @@ class SetupStepsTest(unittest.TestCase):
         self.make().allow_queue_writes()
         fs = json.loads(self.settings.read_text())["sandbox"]["filesystem"]
         self.assertEqual((fs["allowWrite"], fs["denyRead"]), ([QUEUE_ENTRY], list(DENY_READ)))
+        self.assertEqual(json.loads(self.settings.read_text())["permissions"]["deny"],
+                         ["Read(~/.handoff/snap/**)", "Read(~/.handoff/review/**)"])
         self.assertEqual(len(list(self.settings.parent.glob("settings.json.bak.*"))), 1)
         self.assertEqual(list(self.settings.parent.glob("*.handoff-tmp")), [])
 
