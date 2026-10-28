@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -202,15 +203,16 @@ func richWorld(t *testing.T) model {
 var (
 	viewWidths  = []int{120, 100, 80, 60, 200, 40}
 	viewHeights = []int{40, 24, 60, 14, 10}
-	opKeys      = []string{"j", "k", "tab", "shift+tab", "[", "]", "{", "}", "+", "<", ">", "s", "esc", "o", "x", "v"}
+	opKeys      = []string{"j", "k", "tab", "shift+tab", "[", "]", "{", "}", "+", "<", ">", "s", "esc", "o", "x", "v", "c", "q"}
 	wheels      = []tea.MouseButton{tea.MouseButtonWheelDown, tea.MouseButtonWheelDown, tea.MouseButtonWheelUp,
 		tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft, tea.MouseButtonWheelRight}
 )
 
 // randomOp picks one user or disk event from what view (m's current screen) shows, or the review copy it is building
-// arriving. once marks an event to apply to one model only: a reject writes the queue. A disk change is made here and
-// the returned op is the tick after it.
-func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (name string, op func(model) model, once bool) {
+// arriving. once marks an event to apply to one model only: a reject writes the queue, and a run's command must run
+// once. A disk change is made here and the returned op is the tick after it; a run in flight (in runs) ends the same
+// way, its runDone the op.
+func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int, runs *[]tea.Cmd) (name string, op func(model) model, once bool) {
 	if m.amFlight != nil && r.Intn(3) == 0 {
 		return "review copy arrives", built, false
 	}
@@ -231,7 +233,7 @@ func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (nam
 		return 0, 0, false
 	}
 	switch c := r.Intn(100); {
-	case c < 45:
+	case c < 37:
 		k := opKeys[r.Intn(len(opKeys))]
 		if menu && r.Intn(3) == 0 {
 			k = " " // only in the menu: outside it space arms a run
@@ -240,7 +242,7 @@ func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (nam
 			k = []string{">", ">", "<"}[r.Intn(3)] // a cut line is drawn: pan more often than chance would
 		}
 		return "key " + k, func(m model) model { m, _ = press(m, k); return m }, k == "x"
-	case c < 65:
+	case c < 57:
 		b := wheels[r.Intn(len(wheels))]
 		var boxRows []int
 		for y, l := range rows {
@@ -252,7 +254,7 @@ func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (nam
 			return mouse("wheel over box", dx+4, boxRows[r.Intn(len(boxRows))], b)
 		}
 		return mouse("wheel", []int{1, sw + 2, dx + 4}[r.Intn(3)], r.Intn(m.h), b)
-	case c < 82:
+	case c < 74:
 		left := tea.MouseButtonLeft
 		switch r.Intn(5) {
 		case 0:
@@ -273,6 +275,31 @@ func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (nam
 			}
 		}
 		return mouse("click detail", dx+5, buttonY+1+r.Intn(max(1, m.h-5)), left) // never the Run/Reject row
+	case c < 82:
+		if i := r.Intn(len(*runs) + 2); i < len(*runs) {
+			msg := (*runs)[i]() // the run, start to end
+			*runs = slices.Delete(*runs, i, i+1)
+			return "a run ends", func(m model) model { next, _ := m.Update(msg); return next.(model) }, false
+		}
+		var pend []int // items-pane rows drawing a pending item
+		for y, l := range rows {
+			if strings.Contains(ansi.Cut(l, sw, dx), "●") {
+				pend = append(pend, y)
+			}
+		}
+		if len(pend) == 0 {
+			return tick("no pending item to run")
+		}
+		y := pend[r.Intn(len(pend))]
+		return fmt.Sprintf("click the item at row %d, [ Run ], [ Yes, run ]", y), func(m model) model {
+			m, _ = click(m, sw+3, y)
+			m, _ = click(m, dx+runX+1, buttonY)
+			m, cmd := click(m, dx+yesX+1, buttonY)
+			if cmd != nil {
+				*runs = append(*runs, cmd)
+			}
+			return m
+		}, true
 	case c < 88:
 		w, h := m.w, m.h // often only one of them changes, so a cache keyed on the other shows stale
 		switch r.Intn(3) {
@@ -312,11 +339,13 @@ func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (nam
 	return tick("nothing changed")
 }
 
-// TestCachedViewMatchesFresh drives seeded random keys, wheels, clicks, resizes, setting toggles and disk changes,
-// and after each one checks that the view drawn with warm caches is the view drawn with empty ones, and that the
-// event did the same thing as on a copy whose caches were empty when it arrived (hit-testing included).
+// TestCachedViewMatchesFresh drives seeded random keys, wheels, clicks, resizes, setting toggles, runs starting and
+// ending, and disk changes, and after each one checks that the view drawn with warm caches is the view drawn with
+// empty ones, and that the event did the same thing as on a copy whose caches were empty when it arrived (hit-testing
+// included).
 func TestCachedViewMatchesFresh(t *testing.T) {
 	trueColor(t) // so a selection or colour drawn from a stale cache shows as a difference
+	most := 0    // runs in flight at once
 	for _, c := range []struct {
 		seed  int64
 		item  string
@@ -332,6 +361,7 @@ func TestCachedViewMatchesFresh(t *testing.T) {
 	} {
 		seed := c.seed
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
+			var runs []tea.Cmd
 			m := pick(t, richWorld(t), c.item)
 			for _, k := range c.start {
 				m, _ = press(m, k)
@@ -340,7 +370,7 @@ func TestCachedViewMatchesFresh(t *testing.T) {
 			view, added := m.View(), 0
 			var log []string
 			for i := 0; i < 100; i++ {
-				name, op, once := randomOp(t, r, m, view, &added)
+				name, op, once := randomOp(t, r, m, view, &added, &runs)
 				log = append(log, name)
 				cold := fresh(m)
 				m = op(m)
@@ -349,7 +379,7 @@ func TestCachedViewMatchesFresh(t *testing.T) {
 				} else {
 					cold = op(cold)
 				}
-				view = m.View()
+				view, most = m.View(), max(most, len(m.runs))
 				if want := fresh(m).View(); view != want {
 					t.Fatalf("seed %d op %d: the view with warm caches differs from empty caches: %s\nops:\n  %s",
 						seed, i, firstDiff(view, want), strings.Join(log, "\n  "))
@@ -360,6 +390,9 @@ func TestCachedViewMatchesFresh(t *testing.T) {
 				}
 			}
 		})
+	}
+	if most < 2 {
+		t.Errorf("no seed had two runs in flight at once (at most %d)", most)
 	}
 }
 

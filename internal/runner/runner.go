@@ -159,16 +159,18 @@ func gitObjects(repo, stdin string, args ...string) (string, error) {
 }
 
 // CancelStale ends an item left "running" by a viewer that went away (quit or crashed mid-run). It
-// stops the recorded process group only if that pid still runs the item's program, so a pid the OS
-// has since reused for something else is never signalled.
-func CancelStale(q *queue.Queue, it queue.Item, now time.Time) error {
+// stops the recorded process group only if that pid still runs the item's program and is none of
+// mine (the caller's own runs), so a pid the OS has since reused for something else is never signalled.
+func CancelStale(q *queue.Queue, it queue.Item, now time.Time, mine ...int) error {
 	if s := q.State(it, now); s != queue.Running {
 		return fmt.Errorf("item is %s", s)
 	}
 	note := "canceled by the reviewer; no process was recorded for this run, so none was stopped"
 	if pid, ok := q.ClaimPID(it); ok {
 		note = fmt.Sprintf("canceled by the reviewer; process %d is no longer running %s, so nothing was stopped", pid, it.Argv[0])
-		if runsProgram(pid, it.Argv[0]) {
+		if slices.Contains(mine, pid) {
+			note = fmt.Sprintf("canceled by the reviewer; process %d now runs another item, so nothing was stopped", pid)
+		} else if runsProgram(pid, it.Argv[0]) {
 			syscall.Kill(-pid, syscall.SIGTERM)
 			note = fmt.Sprintf("canceled by the reviewer; stopped process group %d", pid)
 		}

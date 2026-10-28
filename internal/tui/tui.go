@@ -76,8 +76,14 @@ type sessionRow struct {
 type tickMsg time.Time
 
 type runDone struct {
-	id  string
-	err error
+	id, desc string
+	err      error
+}
+
+// run is one of this viewer's runs in flight.
+type run struct {
+	rev  *queue.Reviewed // what was reviewed and is running; reopening the item shows this, not a new snapshot
+	stop context.CancelFunc
 }
 
 type model struct {
@@ -91,10 +97,9 @@ type model struct {
 	changed  bool // live item differs from the reviewed snapshot
 	confirm  bool // mouse: Run clicked, waiting for Yes
 	armed    bool // keyboard: one space pressed, waiting for the second
-	running  bool
-	// the run this viewer started; cancelRun stops it (nil when nothing runs here)
-	runningID     string
-	cancelRun     context.CancelFunc
+	// this viewer's runs in flight by item id; copied on write
+	runs          map[string]*run
+	quitArmed     bool // keyboard: q pressed while runs are in flight, waiting for the second
 	cancelArmed   bool // keyboard: one c pressed on a running item, waiting for the second
 	cancelConfirm bool // mouse: Cancel run clicked, waiting for Yes
 	scroll   int
@@ -258,7 +263,12 @@ func (m *model) load() func() loaded {
 // apply puts a load on screen, keeping the selection on the same session and item ids. It reads no files unless
 // the selection is no longer the item the load read the detail for.
 func (m *model) apply(l loaded) {
-	st := func(it queue.Item) string { return l.st[it.ID] }
+	st := func(it queue.Item) string { // as drawn: this viewer's runs are running, also before their claims land
+		if m.runs[it.ID] != nil {
+			return queue.Running
+		}
+		return l.st[it.ID]
+	}
 	var keepS, keepI string
 	had := false // the kept session had a pending item before this reload
 	if s := m.session(); s != nil {
@@ -293,7 +303,7 @@ func (m *model) apply(l loaded) {
 		m.advancedAt = m.now() // the selection moved without the user: guard space like an advance
 	}
 	// a new item arriving (none was pending before) after the selection finished pulls the selection onto it (same session only)
-	if it := m.item(); it != nil && !had && !m.running {
+	if it := m.item(); it != nil && !had {
 		if s := st(*it); s != queue.Pending && s != queue.Running {
 			if best, ok := oldestPending(m.session(), st); ok {
 				m.ii, m.advancedAt, m.reviewed = best, m.now(), nil
@@ -321,26 +331,37 @@ func (m *model) enterSession(si int, st func(queue.Item) string) {
 	}
 }
 
-// live is an item's state on disk now.
-func (m *model) live(it queue.Item) string { return m.q.State(it, time.Now()) }
+// live is an item's state on disk now, or running while this viewer runs it (its claim may not have landed yet).
+func (m *model) live(it queue.Item) string {
+	if m.runs[it.ID] != nil {
+		return queue.Running
+	}
+	return m.q.State(it, time.Now())
+}
 
 // open snapshots the selected item, unless it is already the one under review, and re-reads the detail's data.
 func (m *model) open() {
 	defer func() { m.loadData(); m.clampScroll() }() // clamp to the detail as just read, not as last drawn
 	it := m.item()
-	if it == nil {
-		m.reviewed, m.openErr, m.confirm, m.armed = nil, nil, false, false
-		return
-	}
-	if m.reviewed != nil && m.reviewed.Item.ID == it.ID {
+	if it != nil && m.reviewed != nil && m.reviewed.Item.ID == it.ID {
 		// newer than a load in flight, which would put its older changed and data back
 		m.changed, m.seq = m.q.State(*it, time.Now()) == queue.Pending && m.q.Verify(*m.reviewed) != nil, m.seq+1
 		return
 	}
-	r, err := m.q.Snapshot(it.ID)
-	m.reviewed, m.openErr, m.changed, m.confirm, m.armed, m.scroll = &r, err, false, false, false, 0
+	m.cancelArmed, m.cancelConfirm = false, false // they were raised on the item open before
+	if it == nil {
+		m.reviewed, m.openErr, m.confirm, m.armed = nil, nil, false, false
+		return
+	}
+	if r := m.runs[it.ID]; r != nil {
+		m.reviewed, m.openErr = r.rev, nil // a new snapshot would rewrite the files the run was given
+	} else {
+		rev, err := m.q.Snapshot(it.ID)
+		m.reviewed, m.openErr = &rev, err
+	}
+	m.changed, m.confirm, m.armed, m.scroll = false, false, false, 0
 	m.boxTop, m.boxSel, m.diff, m.diffExp, m.boxX = nil, "", fileDiff{}, nil, nil
-	if err != nil {
+	if r := m.reviewed; m.openErr != nil {
 		m.reviewed = nil
 	} else if r.Item.Edit != "" {
 		base, _ := os.ReadFile(filepath.Join(r.SnapDir, queue.EditBase)) // unreadable: the diff is shown unparsed
@@ -532,14 +553,14 @@ type itemList struct {
 	idx  []int
 }
 
-// itemList is itemPane, cached while the rows, the selected session, this viewer's run, the day the stamps are
+// itemList is itemPane, cached while the rows, the selected session, this viewer's runs, the day the stamps are
 // relative to and the styling are unchanged. Callers must not modify it.
 func (m *model) itemList(s *sessionRow, now time.Time) *itemList {
-	run, n := "", now.Local()
-	if m.running {
-		run = m.runningID
+	runs, n := "", now.Local()
+	if len(m.runs) > 0 { // building the key allocates even for no runs, on every frame
+		runs = strings.Join(slices.Sorted(maps.Keys(m.runs)), " ")
 	}
-	return m.pc.list.get(listKey{m.rowsGen, m.si, run, n.Year()*1000 + n.YearDay(), lookNow()}, func() *itemList {
+	return m.pc.list.get(listKey{m.rowsGen, m.si, runs, n.Year()*1000 + n.YearDay(), lookNow()}, func() *itemList {
 		rows, idx := m.itemPane(s, now)
 		return &itemList{rows, idx}
 	})
@@ -582,7 +603,7 @@ func (m *model) itemView(s *sessionRow, now time.Time) (rows []string, idx []int
 func clamp(i, n int) int { return max(0, min(i, n-1)) }
 
 func (m model) pending() bool {
-	return m.reviewed != nil && !m.running && m.q.State(m.reviewed.Item, time.Now()) == queue.Pending
+	return m.reviewed != nil && m.live(m.reviewed.Item) == queue.Pending
 }
 
 func (m *model) startRun() tea.Cmd {
@@ -595,29 +616,31 @@ func (m *model) startRun() tea.Cmd {
 		m.confirm, m.armed = false, false
 		return nil
 	}
-	m.confirm, m.armed, m.running, m.status, m.seq = false, false, true, "running…", m.seq+1
+	for _, r := range m.runs { // a second am would pass its base pin now, then apply on top of the first's commits
+		if id := m.reviewed.AmRepoID; id != "" && r.rev.AmRepoID == id {
+			m.status = "a git am into this repository is still running: run this once it finishes"
+			m.confirm, m.armed = false, false
+			return nil
+		}
+	}
+	m.confirm, m.armed, m.status, m.seq = false, false, "running…", m.seq+1
 	q, r := m.q, *m.reviewed
 	if v := m.shownAm(); v != nil {
 		r.AmCommits, r.AmChecked = v.made, true
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m.runningID, m.cancelRun = r.Item.ID, cancel
+	m.runs = with(m.runs, r.Item.ID, &run{m.reviewed, cancel})
 	return func() tea.Msg {
 		_, err := runner.Run(ctx, q, r, time.Now())
-		return runDone{id: r.Item.ID, err: err}
+		return runDone{id: r.Item.ID, desc: r.Item.Description, err: err}
 	}
 }
 
-// cancelable: the selected item is this viewer's run in progress, or a run left behind by a viewer that went away.
+// cancelable: the selected item is one of this viewer's runs in progress, or a run left behind by a viewer that went
+// away.
 func (m model) cancelable() bool {
 	it := m.item()
-	if it == nil {
-		return false
-	}
-	if m.running {
-		return it.ID == m.runningID
-	}
-	return m.q.State(*it, time.Now()) == queue.Running
+	return it != nil && m.live(*it) == queue.Running
 }
 
 // drawnState is the selected item's state as drawn (see shownState), or "".
@@ -630,19 +653,10 @@ func (m model) drawnState() string {
 
 // shownPending and shownCancelable are pending() and cancelable() as drawn: from snapshots, so drawing reads no files.
 func (m model) shownPending() bool {
-	return m.reviewed != nil && !m.running && m.drawnState() == queue.Pending
+	return m.reviewed != nil && m.drawnState() == queue.Pending
 }
 
-func (m model) shownCancelable() bool {
-	it := m.item()
-	if it == nil {
-		return false
-	}
-	if m.running {
-		return it.ID == m.runningID
-	}
-	return m.drawnState() == queue.Running
-}
+func (m model) shownCancelable() bool { return m.drawnState() == queue.Running }
 
 // cancel stops the selected run: this viewer's own via its context, a stale one via runner.CancelStale.
 func (m *model) cancel() {
@@ -650,12 +664,18 @@ func (m *model) cancel() {
 	if !m.cancelable() {
 		return
 	}
-	if m.running {
-		m.cancelRun()
+	if r := m.runs[m.item().ID]; r != nil {
+		r.stop()
 		m.status = "canceling…"
 		return
 	}
-	if err := runner.CancelStale(m.q, *m.item(), time.Now()); err != nil {
+	var mine []int // the OS may have given the stale run's recorded pid to one of these
+	for _, r := range m.runs {
+		if pid, ok := m.q.ClaimPID(r.rev.Item); ok {
+			mine = append(mine, pid)
+		}
+	}
+	if err := runner.CancelStale(m.q, *m.item(), time.Now(), mine...); err != nil {
 		m.status = "cancel: " + err.Error()
 		return
 	}
@@ -717,9 +737,9 @@ func (m *model) restate(id, st string) {
 	}
 }
 
-// shownState is an item's state as drawn: this viewer's run in progress, else the refresh snapshot.
+// shownState is an item's state as drawn: running while this viewer runs it, else the refresh snapshot.
 func (m model) shownState(s *sessionRow, it queue.Item) string {
-	if m.running && it.ID == m.runningID {
+	if m.runs[it.ID] != nil {
 		return queue.Running
 	}
 	return s.state[it.ID]
@@ -748,12 +768,19 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.apply(msg)
 		return m, tick() // the next tick waits for this load, so slow loads can't pile up
 	case runDone:
-		if m.cancelRun != nil {
-			m.cancelRun() // releases the context
+		if r := m.runs[msg.id]; r != nil {
+			r.stop() // releases the context
+			m.runs = maps.Clone(m.runs)
+			delete(m.runs, msg.id)
 		}
-		m.running, m.runningID, m.cancelRun, m.cancelArmed, m.cancelConfirm, m.status = false, "", nil, false, false, "finished"
+		if it := m.item(); it != nil && it.ID == msg.id {
+			m.cancelArmed, m.cancelConfirm = false, false // the prompt to cancel this run goes with it
+		}
+		m.quitArmed = m.quitArmed && len(m.runs) > 0   // left armed with no runs, it would take the next key unseen
+		d := ansi.Truncate(oneLine(msg.desc), 24, "…") // names the run without pushing the key hints off the line
+		m.status = "finished: " + d
 		if msg.err != nil {
-			m.status = "run: " + msg.err.Error()
+			m.status = "run: " + d + ": " + msg.err.Error()
 		}
 		m.refresh()
 		m.advance(msg.id)
@@ -796,6 +823,13 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.quitArmed {
+		m.quitArmed = false
+		if k == "q" || k == "ctrl+c" {
+			return m, tea.Quit
+		} // any other key only disarms and is not acted on
+		return m, nil
+	}
 	if m.cancelArmed {
 		m.cancelArmed = false
 		if k == "c" {
@@ -805,9 +839,6 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 	}
 	if m.cancelConfirm { // mouse confirm: any key keeps the run
 		m.cancelConfirm = false
-		return m, nil
-	}
-	if m.running && k != "q" && k != "ctrl+c" && k != "c" && k != "s" {
 		return m, nil
 	}
 	if m.armed {
@@ -823,6 +854,10 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 	}
 	switch k {
 	case "q", "ctrl+c":
+		if len(m.runs) > 0 { // quitting stops waiting for them, so their results would go unrecorded: ask again
+			m.quitArmed = true
+			return m, nil
+		}
 		return m, tea.Quit
 	case "tab", "right", "l":
 		m.focus = min(2, m.focus+1)
@@ -927,11 +962,14 @@ func (m model) footer() (string, int) {
 	if m.changed {
 		keys = append(keys, "o re-open")
 	}
-	plain := strings.Join(append(keys, settingsKey, "q quit"), " · ")
-	f := m.rc.foot.get(styleKey{plain, m.status, lookNow()}, func() footLine {
+	plain, msg := strings.Join(append(keys, settingsKey, "q quit"), " · "), m.status
+	if n := len(m.runs); m.quitArmed {
+		msg = fmt.Sprintf("%d run%s in progress: q again to quit", n, map[bool]string{true: "s"}[n > 1])
+	}
+	f := m.rc.foot.get(styleKey{plain, msg, lookNow()}, func() footLine {
 		status, x := dim.Render(plain), ansi.StringWidth(plain[:strings.Index(plain, settingsKey)])
-		if m.status != "" {
-			s := sanitize(m.status) // errors can quote agent-written text, such as an edit's target path
+		if msg != "" {
+			s := sanitize(msg) // errors can quote agent-written text, such as an edit's target path
 			status = s + dim.Render("  ·  ") + status
 			x += ansi.StringWidth(s + "  ·  ")
 		}
@@ -971,8 +1009,8 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if (m.armed || m.cancelArmed) && press {
-		m.armed, m.cancelArmed = false, false // a click only cancels the arm; it is not acted on
+	if (m.armed || m.cancelArmed || m.quitArmed) && press {
+		m.armed, m.cancelArmed, m.quitArmed = false, false, false // a click only cancels the arm; it is not acted on
 		return m, nil
 	}
 	switch {
@@ -1127,7 +1165,7 @@ func newPaneCache() *paneCache { return &paneCache{} }
 
 type listKey struct {
 	gen, si int
-	run     string // this viewer's running item, drawn as running
+	runs    string // the ids of this viewer's runs in flight, sorted: drawn as running
 	day     int    // the local date stamps are relative to
 	look    look
 }
