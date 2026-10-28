@@ -686,21 +686,22 @@ func (m model) attBox(name string) box {
 // detailData is everything the detail shows from disk and the clock. loadData reads it when an item opens (so at
 // each tick too) and after this viewer acts on an item; drawing reads only this. Never modified once set.
 type detailData struct {
-	state, expires string // the selected item's state, and "expires in" while pending
-	invalid        bool   // the selection is an item that failed to load
-	loadErr        string
-	verified       bool   // the session has a hook record
-	cwd            string // the session's, when verified
-	res            *queue.Result
-	resErr         string // the result is unreadable (not just missing)
-	prompt         *queue.Prompt
-	problems       []string
-	badge          rules.Badge
-	sizes          map[string]int    // attachment sizes by name
-	atts           map[string]string // attachment text as shown, by name; not for edit items
+	expires  string // "expires in" while pending
+	invalid  bool   // the selection is an item that failed to load
+	loadErr  string
+	verified bool   // the session has a hook record
+	cwd      string // the session's, when verified
+	res      *queue.Result
+	resErr   string // the result is unreadable (not just missing)
+	prompt   *queue.Prompt
+	problems []string
+	badge    rules.Badge
+	sizes    map[string]int    // attachment sizes by name
+	atts     map[string]string // attachment text as shown, by name; not for edit items
 }
 
-// loadData re-reads the detail's data, keeping the old snapshot when nothing changed so caches keyed on it hold.
+// loadData re-reads the detail's data, keeping the old snapshot when nothing changed so caches keyed on it hold, and
+// the item's state into the rows (see restate).
 func (m *model) loadData() {
 	d, s, now := &detailData{}, m.session(), time.Now()
 	switch r := m.reviewed; {
@@ -709,7 +710,8 @@ func (m *model) loadData() {
 		d.invalid, d.loadErr = true, fmt.Sprint(err)
 	case r != nil:
 		it := r.Item
-		if d.state = m.q.State(it, now); d.state == queue.Pending {
+		st := m.q.State(it, m.now()) // m.now, as refresh reads the rows' states
+		if m.restate(it.ID, st); st == queue.Pending {
 			d.expires = strings.TrimSuffix(it.Expires.Sub(now).Round(time.Minute).String(), "0s")
 		}
 		project := it.Cwd
@@ -737,7 +739,7 @@ func (m *model) loadData() {
 		}
 	default:
 		if it := m.item(); it != nil {
-			d.state = m.q.State(*it, now)
+			m.restate(it.ID, m.q.State(*it, m.now()))
 		}
 	}
 	if !reflect.DeepEqual(d, m.data) {
