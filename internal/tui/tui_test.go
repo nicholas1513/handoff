@@ -737,6 +737,50 @@ func drawnItems(m model) (out []string) {
 	return
 }
 
+// ghosttyClick is one wheel click as Ghostty sends it: 3 wheel events in one write (measured under 0.3 ms apart).
+func ghosttyClick(m model, x, y int, b tea.MouseButton) model {
+	for range 3 {
+		m = mouseAt(m, x, y, b)
+	}
+	return m
+}
+
+func TestWheelClickMovesTheListOneItem(t *testing.T) {
+	m := manyItems(t, 20)
+	clock := time.Now()
+	m.now = func() time.Time { return clock }
+	sw, iw, _ := columns(m.w)
+	start := m.ii
+	m = ghosttyClick(m, sw+3, listTop+1, tea.MouseButtonWheelDown)
+	if m.ii != start+1 {
+		t.Fatalf("one click moved the items selection %d, want 1", m.ii-start)
+	}
+	clock = clock.Add(10 * time.Millisecond) // the next click
+	m = ghosttyClick(m, sw+3, listTop+1, tea.MouseButtonWheelDown)
+	m = ghosttyClick(m, sw+iw-3, listTop+1, tea.MouseButtonWheelUp) // same instant, other direction: a new click
+	if m.ii != start+1 {
+		t.Fatalf("down then up moved the selection %d, want 1", m.ii-start)
+	}
+}
+
+func TestWheelClickScrollsABoxThreeLines(t *testing.T) {
+	_, m := setup(t)
+	m = withResult(t, m, 200)
+	sw, iw, _ := columns(m.w)
+	y := -1
+	for i, l := range strings.Split(ansi.Strip(m.View()), "\n") {
+		if strings.Contains(l, "out0") && y < 0 {
+			y = i
+		}
+	}
+	if y < 0 {
+		t.Fatal("box not drawn")
+	}
+	if got := ghosttyClick(m, sw+iw+5, y, tea.MouseButtonWheelDown).boxTop[resultBox]; got != 3 {
+		t.Fatalf("one click scrolled the box %d lines, want 3 (one per event)", got)
+	}
+}
+
 func TestItemsPaneScrollsToSelection(t *testing.T) {
 	m := manyItems(t, 20)
 	m.focus = 1
@@ -894,8 +938,8 @@ func TestResultBoxWheelAndPgKeys(t *testing.T) {
 	if y < 0 {
 		t.Fatal("box not drawn")
 	}
-	if got := wheel(m, y).boxTop[resultBox]; got != 19 {
-		t.Fatalf("wheel over box result top %d, want 19", got)
+	if got := wheel(m, y).boxTop[resultBox]; got != 17 {
+		t.Fatalf("wheel over box result top %d, want 17", got)
 	}
 	if got := wheel(m, y-1).boxTop[resultBox]; got != 16 { // the box's top border
 		t.Fatalf("wheel on the top border moved the result top to %d", got)
@@ -906,7 +950,7 @@ func TestResultBoxWheelAndPgKeys(t *testing.T) {
 	if got := wheel(m, y+m.capPct(40)).boxTop[resultBox]; got != 16 { // the bottom border
 		t.Fatalf("wheel on the bottom border moved the result top to %d", got)
 	}
-	if got := wheel(m, y+m.capPct(40)-1).boxTop[resultBox]; got != 19 { // last content row
+	if got := wheel(m, y+m.capPct(40)-1).boxTop[resultBox]; got != 17 { // last content row
 		t.Fatalf("wheel on the last box row result top %d, want 19", got)
 	}
 	if got := wheel(m, 2).boxTop[resultBox]; got != 16 {

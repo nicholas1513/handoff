@@ -210,10 +210,10 @@ func TestWheelSelectsAndScrollsBoxUnderIt(t *testing.T) {
 	if oy < 0 || py < 0 {
 		t.Fatalf("boxes not drawn: %d %d", oy, py)
 	}
-	if f := frames(wheel(py)); f[1].top != 3 || !f[1].sel || f[0].top != 0 || f[0].sel {
+	if f := frames(wheel(py)); f[1].top != 1 || !f[1].sel || f[0].top != 0 || f[0].sel {
 		t.Fatalf("prompt row: %+v", f)
 	}
-	if f := frames(wheel(oy)); f[0].top != 3 || !f[0].sel || f[1].top != 0 {
+	if f := frames(wheel(oy)); f[0].top != 1 || !f[0].sel || f[1].top != 0 {
 		t.Fatalf("result row: %+v", f)
 	}
 	for _, y := range []int{oy - 1, oy + 40, py - 1, py + 20} { // border rows (caps 40% and 20% of 100)

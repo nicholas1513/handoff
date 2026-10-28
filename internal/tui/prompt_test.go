@@ -153,10 +153,10 @@ func TestWheelScrollsTheBoxUnderIt(t *testing.T) {
 	if oy < 0 || py < 0 {
 		t.Fatalf("boxes not drawn: %d %d", oy, py)
 	}
-	if g := wheel(oy); g.boxTop[resultBox] != 3 || g.boxTop[promptBox] != 0 {
+	if g := wheel(oy); g.boxTop[resultBox] != 1 || g.boxTop[promptBox] != 0 {
 		t.Fatalf("result row: %v", g.boxTop)
 	}
-	if g := wheel(py); g.boxTop[promptBox] != 3 || g.boxTop[resultBox] != 0 {
+	if g := wheel(py); g.boxTop[promptBox] != 1 || g.boxTop[resultBox] != 0 {
 		t.Fatalf("prompt row: %v", g.boxTop)
 	}
 	for _, y := range []int{oy - 1, oy + m.capPct(40), py - 1, py + m.capPct(20)} {
