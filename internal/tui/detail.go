@@ -237,6 +237,13 @@ type renderCache struct {
 	lay  *detailLayout
 	hdr  once[styleKey, string]
 	foot once[styleKey, footLine]
+	am   once[amLinesKey, box] // the commits box's lines before panning: a patch can run to 100k lines
+}
+
+// amLinesKey is what the commits box's lines are built from: the review copy and the width they wrap to.
+type amLinesKey struct {
+	v    *amView
+	wrap int
 }
 
 // once is a single-entry cache: the value built for the last key asked for.
@@ -271,6 +278,7 @@ func lookNow() look { return look(lipgloss.ColorProfile()) }
 type layoutKey struct {
 	data           *detailData
 	reviewed       *queue.Reviewed // m.diff is parsed with it
+	am             *amView         // the review copy as drawn, nil until built
 	openErr, state string          // state: the item's as drawn, for its chip
 	changed        bool
 	w, h           int
@@ -295,7 +303,7 @@ type detailLayout struct {
 
 // detailLayout is the cached detail while the model's inputs are unchanged, else a new build of it.
 func (m model) detailLayout() *detailLayout {
-	k := layoutKey{data: m.data, reviewed: m.reviewed, state: m.drawnState(), changed: m.changed, w: m.w, h: m.h, home: m.home, settings: m.settings, look: lookNow()}
+	k := layoutKey{data: m.data, reviewed: m.reviewed, am: m.shownAm(), state: m.drawnState(), changed: m.changed, w: m.w, h: m.h, home: m.home, settings: m.settings, look: lookNow()}
 	if m.openErr != nil {
 		k.openErr = m.openErr.Error()
 	}
@@ -754,14 +762,6 @@ func (m model) detailSegs() []seg {
 		segs = append(segs, seg{text: b.String()}, seg{box: &x})
 		b.Reset()
 	}
-	var atts []box
-	for _, name := range it.Files {
-		if it.Edit != "" { // its contents are shown as the Diff instead
-			continue
-		}
-		atts = append(atts, m.attBox(name))
-	}
-
 	state := m.drawnState()
 	chips := []string{chip(strings.ToUpper(state), resColor(state))}
 	if mt := methodOf(it.Argv); mt != "" {
@@ -848,16 +848,35 @@ func (m model) detailSegs() []seg {
 	if it.Reason != "" {
 		why = append(why, sanitize(it.Reason))
 	}
-	cwd := sanitize(it.Cwd)
-	if m.home != "" && (cwd == m.home || strings.HasPrefix(cwd, m.home+"/")) {
-		cwd = "~" + strings.TrimPrefix(cwd, m.home)
-	}
-	why = append(why, sanitize(d.badge.String(m.home)), cwd) // its rule and file come from the agent's project
+	why = append(why, sanitize(d.badge.String(m.home)), m.tilde(it.Cwd)) // its rule and file come from the agent's project
 	p("%s", dim.Render(strings.Join(why, " · ")))
 
-	for _, a := range atts {
-		p("\n%s", heading("📎 "+sanitize(strings.TrimPrefix(a.id, "file:"))))
-		addBox(a)
+	_, amFile, _ := queue.Am(it)
+	for _, name := range it.Files {
+		if it.Edit != "" { // its contents are shown as the Diff instead
+			continue
+		}
+		p("\n%s", heading("📎 "+sanitize(name)))
+		switch v := m.shownAm(); {
+		case name != amFile || v == nil && state != queue.Pending:
+			addBox(m.attBox(name))
+		case v == nil:
+			p("%s", dim.Render("preparing review copy…"))
+		default:
+			if v.sum != "" { // git's result: all of it, or the commits git am made before it stopped
+				sum := v.sum
+				if v.bin > 0 || v.err != "" {
+					sum = warn.Render(sum)
+				}
+				p("%s", sum)
+				p("%s", dim.Render("drawn from git am's result on "+m.tilde(v.repo)+" at "+v.base[:min(12, len(v.base))]))
+				addBox(m.amBox("file:"+name, v))
+			}
+			if v.err != "" {
+				p("%s", warn.Render("⚠ "+sanitize(v.err)))
+				addBox(m.attBox(name))
+			}
+		}
 	}
 
 	p("\n%s", heading("Integrity"))
@@ -874,6 +893,21 @@ func (m model) detailSegs() []seg {
 	p("%s\n%s", dim.Render("combined (internal; not comparable to shasum)"), dim.Render(m.reviewed.Hash))
 
 	return append(segs, seg{text: b.String()})
+}
+
+// amBox is the commits box: git's log of what git am made, drawn like the edit's diff.
+func (m model) amBox(id string, v *amView) box {
+	k := amLinesKey{v, m.diffWrap()}
+	return m.diffLike(id, m.rc.am.get(k, func() box { return diffLines(v.rows, k.wrap, true) }))
+}
+
+// tilde is path sanitized, starting with ~ when it is under the home directory.
+func (m model) tilde(path string) string {
+	path = sanitize(path)
+	if m.home != "" && (path == m.home || strings.HasPrefix(path, m.home+"/")) {
+		path = "~" + strings.TrimPrefix(path, m.home)
+	}
+	return path
 }
 
 // resColor: pending yellow, succeeded green, anything else (failed, rejected) red.

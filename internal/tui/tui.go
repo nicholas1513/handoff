@@ -117,6 +117,9 @@ type model struct {
 	rc      *renderCache
 	pc      *paneCache
 
+	am       *amView // the open am item's review copy, once built (see reviewCmd)
+	amFlight *flight // the review copy being built, if any
+
 	now        func() time.Time
 	advancedAt time.Time
 	wheelAt    time.Time // the last wheel event, and its pane and direction, for wheelBurst
@@ -144,7 +147,7 @@ func newModel(q *queue.Queue, home string) model {
 	return m
 }
 
-func (m model) Init() tea.Cmd { return tick() }
+func (m model) Init() tea.Cmd { return tea.Batch(tick(), sweep(m.q)) }
 
 func tick() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -582,7 +585,8 @@ func (m model) pending() bool {
 }
 
 func (m *model) startRun() tea.Cmd {
-	if !m.shownPending() || !m.pending() { // like arm and reject: a prompt a refresh took off the screen answers nothing
+	// like arm and reject: a prompt a refresh took off the screen answers nothing
+	if !m.shownPending() || !m.pending() || !m.amReady() {
 		return nil
 	}
 	if m.changed {
@@ -723,7 +727,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if s := next.session(); s != nil {
 		next.itemWin(s, next.now())
 	}
-	return next, cmd
+	return next, tea.Batch(cmd, next.reviewCmd())
 }
 
 func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -749,6 +753,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refresh()
 		m.advance(msg.id)
+	case *amView:
+		if f := m.amFlight; f != nil && msg.key == f.key {
+			f.stop()
+			m.am, m.amFlight = msg, nil
+			if m.status == notReady {
+				m.status = ""
+			}
+			m.clampScroll()
+		}
 	case tea.KeyMsg:
 		return m.key(msg.String())
 	case tea.MouseMsg:
@@ -760,7 +773,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // arm is the only way a key starts a run; holds the advanceGuard check. Like every prompt, it is set only when the
 // screen shows the item as pending (the drawn state) and the disk still says so (the live one).
 func (m *model) arm() {
-	m.armed = m.shownPending() && m.pending() && m.now().Sub(m.advancedAt) >= advanceGuard
+	m.armed = m.shownPending() && m.pending() && m.now().Sub(m.advancedAt) >= advanceGuard && m.amReady()
 }
 
 func (m model) key(k string) (tea.Model, tea.Cmd) {
@@ -834,7 +847,11 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 			m.reveal(m.selBox())
 		}
 	case "o":
-		m.reviewed, m.seq = nil, m.seq+1
+		if f := m.amFlight; f != nil { // its git am may be reading the snapshot that open is about to rewrite
+			f.stop()
+		}
+		// and the review copy is built again, which brings a good one back from reviews.built and retries a failed one
+		m.reviewed, m.am, m.amFlight, m.seq = nil, nil, nil, m.seq+1
 		m.open()
 	case "s":
 		m.menu = true
@@ -989,7 +1006,7 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case m.confirm && x >= yesX && x < yesX+12:
 			return m, m.startRun()
 		case !m.confirm && x >= runX && x < runX+7:
-			m.confirm = m.shownPending() && m.pending()
+			m.confirm = m.shownPending() && m.pending() && m.amReady()
 		case !m.confirm && x >= rejectX && x < rejectX+10:
 			m.reject()
 		}

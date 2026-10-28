@@ -145,9 +145,9 @@ func tempFile(t testing.TB, name, body string) string {
 }
 
 // richWorld stages three sessions and returns the model on the rich item at 120x40 with the detail focused and the
-// clock fixed. A (verified, titled) holds pending and finished items, a rejected one, an edit with a diff and the rich
-// item (60-line prompt, 120-line result, a JSON and a text attachment); B is unverified with one pending item; C is
-// verified with a finished one.
+// clock fixed. A (verified, titled) holds pending and finished items, a rejected one, an edit with a diff, a git am of
+// two commits and the rich item (60-line prompt, 120-line result, a JSON and a text attachment); B is unverified with
+// one pending item; C is verified with a finished one.
 func richWorld(t *testing.T) model {
 	t.Helper()
 	q, m := setup(t) // A: "first" and "second" pending after "do the thing"
@@ -173,6 +173,10 @@ func richWorld(t *testing.T) model {
 	target := tempFile(t, "f.txt", strings.Join(old, "\n")+"\n")
 	addItem(t, q, queue.Item{Description: "edit", Edit: target, Argv: queue.EditArgv(target), SessionID: sid},
 		map[string]string{queue.EditFile: tempFile(t, "new.txt", strings.Join(neu, "\n")+"\n")})
+
+	repo, patch := commitsPatch(t)
+	addItem(t, q, queue.Item{Description: "am", SessionID: sid, Argv: []string{"git", "-C", repo, "am", "{file:commits.patch}"}},
+		map[string]string{"commits.patch": patch})
 
 	q.AddPrompt(queue.Prompt{SessionID: sid, TS: time.Now(), Prompt: strings.TrimSuffix(numbered("p%03d", 60), "\n")})
 	var js strings.Builder
@@ -203,9 +207,13 @@ var (
 		tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft, tea.MouseButtonWheelRight}
 )
 
-// randomOp picks one user or disk event from what view (m's current screen) shows. once marks an event to apply to
-// one model only: a reject writes the queue. A disk change is made here and the returned op is the tick after it.
+// randomOp picks one user or disk event from what view (m's current screen) shows, or the review copy it is building
+// arriving. once marks an event to apply to one model only: a reject writes the queue. A disk change is made here and
+// the returned op is the tick after it.
 func randomOp(t *testing.T, r *rand.Rand, m model, view string, added *int) (name string, op func(model) model, once bool) {
+	if m.amFlight != nil && r.Intn(3) == 0 {
+		return "review copy arrives", built, false
+	}
 	rows := strings.Split(ansi.Strip(view), "\n")
 	menu := strings.Contains(view, "Diff word wrap")
 	sw, iw, _ := columns(m.w)
@@ -318,6 +326,8 @@ func TestCachedViewMatchesFresh(t *testing.T) {
 		{2, "edit", nil},
 		{3, "rich", []string{"s", "j", " ", "esc"}}, // attachment wrap off: the attachments pan
 		{4, "edit", []string{"s", " ", "esc"}},      // diff wrap off: the diff pans
+		{5, "am", nil},
+		{6, "am", []string{"s", " ", "esc"}}, // diff wrap off: the commits pan
 	} {
 		seed := c.seed
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {

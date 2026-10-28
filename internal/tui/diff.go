@@ -33,7 +33,7 @@ type fileDiff struct {
 	raw   []string
 }
 
-var hunkRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@`)
+var hunkRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@`)
 
 func splitLines(s string) []string {
 	if s == "" {
@@ -127,13 +127,13 @@ func (d fileDiff) rows(exp map[int][2]int) []dline {
 		switch first, last := i == 0, i == len(d.hunks); {
 		case hidden == 0:
 		case hidden <= expandStep || (first && last):
-			add("[+] ↕ show "+lines(hidden), expandColor, &expand{gap: i, top: hidden})
+			add("[+] ↕ show "+count(hidden, "line"), expandColor, &expand{gap: i, top: hidden})
 		default:
 			if !first {
-				add("[+] ↓ show "+lines(expandStep)+" · "+strconv.Itoa(hidden)+" hidden", expandColor, &expand{gap: i, top: expandStep})
+				add("[+] ↓ show "+count(expandStep, "line")+" · "+strconv.Itoa(hidden)+" hidden", expandColor, &expand{gap: i, top: expandStep})
 			}
 			if !last {
-				add("[+] ↑ show "+lines(expandStep)+" · "+strconv.Itoa(hidden)+" hidden", expandColor, &expand{gap: i, bottom: expandStep})
+				add("[+] ↑ show "+count(expandStep, "line")+" · "+strconv.Itoa(hidden)+" hidden", expandColor, &expand{gap: i, bottom: expandStep})
 			}
 		}
 		ctx(gap[len(gap)-bot:])
@@ -149,11 +149,27 @@ func (d fileDiff) rows(exp map[int][2]int) []dline {
 	return out
 }
 
-func lines(n int) string {
+func count(n int, what string) string {
 	if n == 1 {
-		return "1 line"
+		return "1 " + what
 	}
-	return strconv.Itoa(n) + " lines"
+	return strconv.Itoa(n) + " " + what + "s"
+}
+
+// hunkLen is a hunk header's old and new line counts.
+func hunkLen(l string) (old, neu int, ok bool) {
+	m := hunkRe.FindStringSubmatch(l)
+	if m == nil {
+		return 0, 0, false
+	}
+	n := func(s string) int {
+		if s == "" {
+			return 1
+		}
+		v, _ := strconv.Atoi(s)
+		return v
+	}
+	return n(m[2]), n(m[3]), true
 }
 
 // expandAll applies every [+] row at once: the + key.
@@ -171,25 +187,47 @@ func applyExpand(exp map[int][2]int, a expand) map[int][2]int {
 	return with(exp, a.gap, [2]int{v[0] + a.top, v[1] + a.bottom})
 }
 
-// diffBox is the diff in an always-framed box capped at half the window, so it scrolls instead of growing the
-// pane. Each drawn line keeps its logical row in meta, so wrapped continuations keep their colour and clicks
-// land on the right row. With wrap off, lines are cut to the window at the box's pan offset (see cutLines).
+// diffBox is the edit's diff, revealed context included.
 func (m model) diffBox() box {
+	return m.diffLike(diffBox, diffLines(m.diff.rows(m.diffExp), m.diffWrap(), false))
+}
+
+// diffWrap is the width diff-like boxes wrap to, 0 with diff word wrap off.
+func (m model) diffWrap() int {
+	if !m.settings.DiffWrap {
+		return 0
+	}
 	_, _, dw := columns(m.w)
-	inner := max(1, dw-6)
-	b := box{id: diffBox, framed: true}
-	for _, r := range m.diff.rows(m.diffExp) {
+	return max(1, dw-6)
+}
+
+// diffLines is rows as a box's lines, wrapped to wrap cells (0: not wrapped). Each line keeps its row in meta, so
+// wrapped continuations keep their colour and clicks land on the right row. hard wraps by cell and keeps every space,
+// so a wrapped line's parts rejoin to the line git wrote: word wrap drops the space at each break.
+func diffLines(rows []dline, wrap int, hard bool) (b box) {
+	for _, r := range rows {
 		t := shownDiff(r.text)
 		parts := []string{t}
-		if m.settings.DiffWrap {
-			parts = wrapLines(t, inner)
+		switch {
+		case wrap > 0 && hard:
+			parts = strings.Split(ansi.Hardwrap(t, wrap, true), "\n")
+		case wrap > 0:
+			parts = wrapLines(t, wrap)
 		}
 		for _, p := range parts {
 			b.lines, b.meta = append(b.lines, p), append(b.meta, r)
 		}
 	}
+	return b
+}
+
+// diffLike is b, from diffLines, in an always-framed box capped at half the window, so it scrolls instead of growing
+// the pane. With wrap off, lines are cut to the window at the box's pan offset (see cutLines).
+func (m model) diffLike(id string, b box) box {
+	b.id, b.framed = id, true
 	if !m.settings.DiffWrap {
-		b.lines, b.x = cutLines(b.lines, m.boxX[diffBox], inner)
+		_, _, dw := columns(m.w)
+		b.lines, b.x = cutLines(b.lines, m.boxX[id], max(1, dw-6))
 		b.pan = true
 	}
 	b.cap = max(1, min(len(b.lines), m.capPct(50)))

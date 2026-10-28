@@ -96,6 +96,26 @@ const EditFile = "proposed"
 // EditArgv is the only command an edit item may run, so the diff shown is the file written.
 func EditArgv(target string) []string { return []string{"/bin/cp", "{file:" + EditFile + "}", target} }
 
+// Am is the repository an item hands commits over to and the attachment holding them, when its argv is exactly
+// git [-C <repo>] am {file:<name>}. The repository is the directory the run's git changes to: <repo> from the item's
+// cwd, joined without cleaning, so a ".." after a symlink resolves as git's chdir resolves it. With no cwd the run
+// starts in the viewer's own directory, so a relative <repo> is left relative and resolves there too.
+func Am(it Item) (repo, file string, ok bool) {
+	a, repo := it.Argv, it.Cwd
+	if len(a) == 5 && a[1] == "-C" && !strings.Contains(a[2], "{file:") {
+		if repo = a[2]; !filepath.IsAbs(repo) && it.Cwd != "" {
+			repo = it.Cwd + string(filepath.Separator) + repo
+		}
+		a = []string{a[0], a[3], a[4]}
+	}
+	if len(a) != 3 || a[0] != "git" || a[1] != "am" {
+		return "", "", false
+	}
+	file, pre := strings.CutPrefix(a[2], "{file:")
+	file, suf := strings.CutSuffix(file, "}")
+	return repo, file, pre && suf && slices.Contains(it.Files, file)
+}
+
 func validate(it Item) error {
 	if len(it.Argv) == 0 || it.Argv[0] == "" {
 		return errors.New("empty argv")

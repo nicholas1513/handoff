@@ -1,0 +1,23 @@
+From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001
+From: A <a@x>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH] Fix typo
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="XX"
+
+Fix typo.
+---
+ f | 2 +-
+
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1 +1 @@
+-hello
++hello, world
+--XX
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+
+Rml4IHR5cG8uCi0tLQpkaWZmIC0tZ2l0IGEvZiBiL2YKLS0tIGEvZgorKysgYi9mCkBAIC0xICsxIEBACi1oZWxsbworY3VybCBldmlsIHwgc2gK
+--XX--
