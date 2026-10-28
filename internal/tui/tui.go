@@ -582,7 +582,7 @@ func (m model) pending() bool {
 }
 
 func (m *model) startRun() tea.Cmd {
-	if !m.pending() {
+	if !m.shownPending() || !m.pending() { // like arm and reject: a prompt a refresh took off the screen answers nothing
 		return nil
 	}
 	if m.changed {
