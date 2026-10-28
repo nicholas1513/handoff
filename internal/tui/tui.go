@@ -737,6 +737,29 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// detailHeader is the button row: Run/Reject, confirm/armed, cancel-run variants, as drawn.
+func (m model) detailHeader() string {
+	text, alert := "", false
+	switch {
+	case m.shownPending() && m.confirm:
+		text, alert = confirmBtn, true
+	case m.shownPending() && m.armed:
+		text, alert = armedBtn, true
+	case m.shownPending():
+		text = runBtn
+	case m.shownCancelable() && m.cancelConfirm:
+		text, alert = cancelConfirmBtn, true
+	case m.shownCancelable() && m.cancelArmed:
+		text, alert = cancelArmedBtn, true
+	case m.shownCancelable():
+		text = cancelRunBtn
+	}
+	if !alert {
+		return text
+	}
+	return m.rc.hdr.get(styleKey{text: text, look: lookNow()}, func() string { return warn.Render(text) })
+}
+
 const settingsKey = "s settings"
 
 // footer is the status line, and the column its settings hint starts at, for the mouse.
@@ -763,12 +786,21 @@ func (m model) footerOf(l layout) (string, int) {
 		keys = append(keys, "o re-open")
 	}
 	plain := strings.Join(append(keys, settingsKey, "q quit"), " · ")
-	status, x := dim.Render(plain), ansi.StringWidth(plain[:strings.Index(plain, settingsKey)])
-	if m.status != "" {
-		status = m.status + dim.Render("  ·  ") + status
-		x += ansi.StringWidth(m.status + "  ·  ")
-	}
-	return status, x
+	f := m.rc.foot.get(styleKey{plain, m.status, lookNow()}, func() footLine {
+		status, x := dim.Render(plain), ansi.StringWidth(plain[:strings.Index(plain, settingsKey)])
+		if m.status != "" {
+			status = m.status + dim.Render("  ·  ") + status
+			x += ansi.StringWidth(m.status + "  ·  ")
+		}
+		return footLine{status, x}
+	})
+	return f.text, f.x
+}
+
+// footLine is the status line as drawn and the column its settings hint starts at.
+type footLine struct {
+	text string
+	x    int
 }
 
 // statusY is the footer's screen row: below the panes, which are max(5, h-3) rows plus their borders.
@@ -909,32 +941,12 @@ func (m model) View() string {
 		irows, _, isel = m.itemView(s, m.now())
 	}
 
-	header := ""
-	if m.shownPending() {
-		header = runBtn
-		if m.confirm {
-			header = warn.Render(confirmBtn)
-		} else if m.armed {
-			header = warn.Render(armedBtn)
-		}
-	} else if m.shownCancelable() {
-		header = cancelRunBtn
-		if m.cancelConfirm {
-			header = warn.Render(cancelConfirmBtn)
-		} else if m.cancelArmed {
-			header = warn.Render(cancelArmedBtn)
-		}
-	}
-	l := m.layout()
-	body := m.linesOf(l)
-	body = body[m.bodyTop(len(body)):]
-
-	status, _ := m.footerOf(l)
+	status, _ := m.footer()
 	v := lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Top,
 			m.pane(0, sw, h, "Sessions", srows, m.si),
 			m.pane(1, iw, h, "Items", irows, isel),
-			m.pane(2, dw, h, "Detail", append([]string{header}, body...), -1),
+			m.pane(2, dw, h, "Detail", append([]string{m.detailHeader()}, m.detailRows(h-2)...), -1),
 		),
 		status,
 	)
