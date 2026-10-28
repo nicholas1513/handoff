@@ -22,8 +22,14 @@ import (
 // mail, which git am decodes in ways a parser lags behind, the viewer lets git apply the reviewed snapshot in a review
 // copy of the repository and draws git's own log of what it made.
 
-// reviewKey names an am item's review copy: the item and the snapshot it applies.
-type reviewKey struct{ id, hash string }
+// reviewKey names an am item's review copy: the item, the snapshot it applies, and the commit and repository it applies
+// it on.
+type reviewKey struct{ id, hash, base, repo, repoID string }
+
+// keyOf is the key of r's review copy.
+func keyOf(r *queue.Reviewed) reviewKey {
+	return reviewKey{r.Item.ID, r.Hash, r.AmBase, r.AmRepo, r.AmRepoID}
+}
 
 // amView is an am item's review copy as drawn: git's log of the commits git am made, or why it failed. Never
 // modified once built.
@@ -50,7 +56,7 @@ func reviewDir(root, id string) string { return filepath.Join(root, "review", id
 func (m model) amKey() (reviewKey, bool) {
 	if r := m.reviewed; r != nil {
 		if _, _, ok := queue.Am(r.Item); ok {
-			return reviewKey{r.Item.ID, r.Hash}, true
+			return keyOf(r), true
 		}
 	}
 	return reviewKey{}, false
@@ -59,7 +65,7 @@ func (m model) amKey() (reviewKey, bool) {
 // shownAm is the open am item's review copy, once built. Layout lookups ask on every event, so it compares keys only:
 // a review copy is built for an am item, and its key holds the hash of the item's argv.
 func (m model) shownAm() *amView {
-	if r := m.reviewed; m.am != nil && r != nil && m.am.key == (reviewKey{r.Item.ID, r.Hash}) {
+	if r := m.reviewed; m.am != nil && r != nil && m.am.key == keyOf(r) {
 		return m.am
 	}
 	return nil
@@ -113,20 +119,20 @@ func (m model) build(ctx context.Context) tea.Cmd {
 	}
 }
 
-// buildReview applies the snapshot of r, an am item, with git am in a fresh clone of its repository at HEAD and reads
-// back what git made of it. A fresh clone has no hooks and none of the repository's config but the settings it copies
-// because they change what git am does (am, mailinfo, i18n, apply and core.whitespace), so nothing an agent planted runs.
+// buildReview applies the snapshot of r, an am item, with git am in a fresh clone of the repository and on the HEAD the
+// snapshot pinned (Verify refuses the run in any other) and reads back what git made of it. A fresh clone has no hooks
+// and none of the repository's config but the settings it copies because they change what git am does (am, mailinfo,
+// i18n, apply and core.whitespace), so nothing an agent planted runs.
 func buildReview(ctx context.Context, root string, r queue.Reviewed) *amView {
-	repo, file, _ := queue.Am(r.Item)
-	v := &amView{key: reviewKey{r.Item.ID, r.Hash}}
+	_, file, _ := queue.Am(r.Item)
+	v := &amView{key: keyOf(&r), repo: r.AmRepo, base: r.AmBase}
 	reviews.Lock()
 	defer reviews.Unlock()
-	out, err := git(ctx, repo, "rev-parse", "--show-toplevel", "--verify", "HEAD^{commit}")
-	if err == nil {
-		v.repo, v.base, _ = strings.Cut(strings.TrimSpace(out), "\n")
-		if old := reviews.built[r.Item.ID]; old != nil && old.key == v.key && old.base == v.base {
-			return old
-		}
+	if old := reviews.built[r.Item.ID]; old != nil && old.key == v.key {
+		return old
+	}
+	err := queue.ErrNoCommit // and the run is refused with it
+	if r.AmBase != "" {
 		delete(reviews.built, r.Item.ID) // its directory is about to go
 		var patch string
 		if patch, err = filepath.Abs(filepath.Join(r.SnapDir, file)); err == nil {

@@ -44,6 +44,9 @@ func Run(ctx context.Context, q *queue.Queue, r queue.Reviewed, now time.Time) (
 	if err != nil {
 		return queue.Result{}, err
 	}
+	if _, _, ok := queue.Am(r.Item); ok && r.AmBase == "" { // before the claim: the item stays pending, to reject
+		return queue.Result{}, queue.ErrNoCommit
+	}
 	if err := q.Claim(r.Item); err != nil {
 		return queue.Result{}, fmt.Errorf("claim: %w", err)
 	}

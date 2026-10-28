@@ -10,6 +10,7 @@
 package queue
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -25,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -43,6 +45,9 @@ const (
 )
 
 var ErrModified = errors.New("item changed after review")
+
+// ErrNoCommit refuses an am item whose repository had no HEAD commit when reviewed: no review copy can be built on it.
+var ErrNoCommit = errors.New("git am has no commit to apply on: the repository has none yet, or isn't one")
 
 // safeName is used for anything that becomes a path segment: ids, session ids, attachment names.
 var safeName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
@@ -78,6 +83,10 @@ type Reviewed struct {
 	FileHashes []FileHash
 	// For edit items: the target's SHA-256 when the diff was taken ("" if it didn't exist), and the diff.
 	BaseSHA256, Diff string
+	// For am items (see Am), as snapshotted: the repository's HEAD commit, which git am was reviewed on, its top level,
+	// and its git directory's device and inode ("dev:ino"), which tell it from another directory later put at that
+	// path. All "" if it had no HEAD commit.
+	AmBase, AmRepo, AmRepoID string
 }
 
 type FileHash struct{ Name, Path, SHA256 string }
@@ -289,7 +298,35 @@ func (q *Queue) Snapshot(id string) (Reviewed, error) {
 			return Reviewed{}, err
 		}
 	}
+	if repo, _, ok := Am(it); ok {
+		r.AmBase, r.AmRepo, r.AmRepoID = amRepo(repo)
+	}
 	return r, nil
+}
+
+// amTimeout bounds amRepo, which runs as the item is opened, on the viewer's event loop: a repository can make git wait
+// (a FIFO for HEAD).
+var amTimeout = 5 * time.Second
+
+// amRepo is the repository git -C repo works in: its HEAD commit, top level and git directory's "dev:ino", all "" if
+// it has no HEAD commit. Read with hooks, the fsmonitor and lazy fetches off: a partial clone missing HEAD would fetch
+// it with its promisor remote's upload-pack, a command the repository names.
+func amRepo(repo string) (base, top, id string) {
+	ctx, stop := context.WithTimeout(context.Background(), amTimeout)
+	defer stop()
+	out, _ := exec.CommandContext(ctx, "git", "--no-lazy-fetch", "-c", "core.hooksPath=/dev/null",
+		"-c", "core.fsmonitor=false", "-C", repo, "rev-parse", "--show-toplevel", "--absolute-git-dir", "--verify", "-q",
+		"HEAD^{commit}").Output()
+	l := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(l) != 3 {
+		return "", "", ""
+	}
+	fi, err := os.Stat(l[1])
+	if err != nil {
+		return "", "", ""
+	}
+	s := fi.Sys().(*syscall.Stat_t) // unix only, like the runner's process groups
+	return l[2], l[0], fmt.Sprintf("%d:%d", s.Dev, s.Ino)
 }
 
 // EditBase is the snapshot's copy of an edit target as it was diffed (empty if it didn't exist). It
@@ -329,7 +366,8 @@ func editDiff(target, proposed, base string) (sum, diff string, err error) {
 }
 
 // Verify re-reads the live item and returns ErrModified if anything differs from the review,
-// including an edit target that changed since its diff was taken.
+// including an edit target that changed since its diff was taken and an am item's repository that is another one or
+// whose HEAD moved.
 func (q *Queue) Verify(r Reviewed) error {
 	_, _, hash, _, err := q.read(r.Item.ID)
 	if err != nil {
@@ -341,6 +379,14 @@ func (q *Queue) Verify(r Reviewed) error {
 	if r.Item.Edit != "" {
 		if _, base, err := readTarget(r.Item.Edit); err != nil || base != r.BaseSHA256 {
 			return fmt.Errorf("%w: %s changed since the diff was taken", ErrModified, r.Item.Edit)
+		}
+	}
+	if repo, _, ok := Am(r.Item); ok {
+		switch base, top, id := amRepo(repo); {
+		case top != r.AmRepo || id != r.AmRepoID:
+			return fmt.Errorf("%w: %s is not the repository reviewed", ErrModified, repo)
+		case base != r.AmBase:
+			return fmt.Errorf("%w: %s HEAD moved since review", ErrModified, repo)
 		}
 	}
 	return nil

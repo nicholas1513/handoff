@@ -234,13 +234,19 @@ func TestReviewCopyIsBuiltOffTheLoop(t *testing.T) {
 	}
 }
 
+// TestReviewCopyOfNoRepository: with no commit to apply on (not a repository, or one with none yet, where git am of a
+// root patch would succeed) no review copy can be built; the run is refused for the reason drawn.
 func TestReviewCopyOfNoRepository(t *testing.T) {
 	needGit(t)
-	_, m := setup(t)
-	m = built(amModel(t, m, t.TempDir(), fixture(t, "rv-patchsec__plain"), 200, 60))
-	if flat := flatten(m.detail()); !strings.Contains(flat, "⚠ git rev-parse: fatal: not a git repository") ||
-		!strings.Contains(flat, "Subject: [PATCH] Fix typo") {
-		t.Fatalf("want git's error and the raw text:\n%s", ansi.Strip(m.detail()))
+	unborn := t.TempDir()
+	gitOut(t, unborn, "init", "-q")
+	for _, repo := range []string{t.TempDir(), unborn} {
+		_, m := setup(t)
+		m = built(amModel(t, m, repo, fixture(t, "rv-patchsec__plain"), 200, 60))
+		if flat := flatten(m.detail()); !strings.Contains(flat, "⚠ "+queue.ErrNoCommit.Error()) ||
+			!strings.Contains(flat, "Subject: [PATCH] Fix typo") {
+			t.Fatalf("%s: want the refusal and the raw text:\n%s", repo, ansi.Strip(m.detail()))
+		}
 	}
 }
 
@@ -300,6 +306,44 @@ func TestSweepRemovesFinishedItemsReviewCopies(t *testing.T) {
 		if _, err := os.Stat(reviewDir(q.Root, id)); (err == nil) != keep {
 			t.Errorf("%s: kept %v, want %v", id, err == nil, keep)
 		}
+	}
+}
+
+// TestReviewPinsTheBase: once the repository's HEAD moves, the item shows as changed and won't run; o reviews it again
+// on the new HEAD, and then it runs.
+func TestReviewPinsTheBase(t *testing.T) {
+	needGit(t)
+	repo := mkRepo(t, map[string]string{"f": "hello\n", "g": "x\n"})
+	_, m := setup(t)
+	m = built(amModel(t, m, repo, fixture(t, "rv-patchsec__plain"), 160, 40))
+	m.focus, m.advancedAt = 2, time.Time{}
+	os.WriteFile(filepath.Join(repo, "g"), []byte("y\n"), 0o600)
+	gitOut(t, repo, "commit", "-qam", "Move on")
+	head := strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
+	if m = tickM(m); rowWith(drawn(m, 2), "Changed on disk") == "" {
+		t.Fatalf("HEAD moved, the item is not drawn as changed:\n%s", strings.Join(drawn(m, 2), "\n"))
+	}
+	m, _ = press(m, " ")
+	m, cmd := press(m, " ")
+	if cmd != nil || !strings.Contains(statusLine(m), "press o") {
+		t.Fatalf("ran an item whose repository moved since review, or said nothing: %q", statusLine(m))
+	}
+	m, cmd = press(m, "o")
+	if cmd == nil || rowWith(drawn(m, 2), "preparing review copy…") == "" {
+		t.Fatal("o did not build the review copy again")
+	}
+	next, _ := m.Update(cmd())
+	if m = next.(model); rowWith(drawn(m, 2), "at "+head[:12]) == "" {
+		t.Fatalf("not drawn on the new HEAD %s:\n%s", head, strings.Join(drawn(m, 2), "\n"))
+	}
+	m.advancedAt = time.Time{}
+	m, _ = press(m, " ")
+	if m, cmd = press(m, " "); cmd == nil {
+		t.Fatal("reviewed again, it does not run")
+	}
+	next, _ = m.Update(cmd())
+	if got := gitOut(t, repo, "log", "--format=%s", "-2"); got != "Fix typo\nMove on\n" || !strings.Contains(statusLine(next.(model)), "finished") {
+		t.Fatalf("log = %q, status %q", got, statusLine(next.(model)))
 	}
 }
 
