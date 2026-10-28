@@ -237,7 +237,7 @@ func (m *model) enterSession(si int) {
 
 // open snapshots the selected item, unless it is already the one under review, and re-reads the detail's data.
 func (m *model) open() {
-	defer m.loadData()
+	defer func() { m.loadData(); m.clampScroll() }() // clamp to the detail as just read, not as last drawn
 	it := m.item()
 	if it == nil {
 		m.reviewed, m.openErr, m.confirm, m.armed = nil, nil, false, false
@@ -245,7 +245,6 @@ func (m *model) open() {
 	}
 	if m.reviewed != nil && m.reviewed.Item.ID == it.ID {
 		m.changed = m.q.State(*it, time.Now()) == queue.Pending && m.q.Verify(*m.reviewed) != nil
-		m.clampScroll()
 		return
 	}
 	r, err := m.q.Snapshot(it.ID)
