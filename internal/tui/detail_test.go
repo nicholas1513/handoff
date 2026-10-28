@@ -237,3 +237,18 @@ func TestIntegrityOrderAndLabel(t *testing.T) {
 		t.Fatalf("item.json hash at %d, combined label at %d:\n%s", a, b, out)
 	}
 }
+
+// TestWrapMemoKeepsTwoWidths: a layout wraps at two widths, so a rebuild at one size reuses both wraps, and a resize
+// drops the old size's wraps instead of holding one per width.
+func TestWrapMemoKeepsTwoWidths(t *testing.T) {
+	s := strings.Repeat("word ", 100)
+	a, b := wrapLines(s, 40), wrapLines(s, 44)
+	if &wrapLines(s, 40)[0] != &a[0] || &wrapLines(s, 44)[0] != &b[0] {
+		t.Fatal("wrapping again at one of the last two widths missed the memo")
+	}
+	wrapLines(s, 50)
+	wrapLines(s, 54)
+	if &wrapLines(s, 40)[0] == &a[0] {
+		t.Fatal("a width two resizes ago is still held")
+	}
+}
