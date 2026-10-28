@@ -188,21 +188,6 @@ func TestSpaceCancelsMouseConfirm(t *testing.T) {
 	}
 }
 
-func TestKeysDroppedWhileRunning(t *testing.T) {
-	_, m := setup(t)
-	m, _ = press(m, " ")
-	m.running = true
-	m, cmd := press(m, " ")
-	if !m.armed || cmd != nil {
-		t.Fatal("space must be dropped while running")
-	}
-	m.focus, m.ii = 1, 0
-	m, _ = press(m, "j")
-	if m.ii != 0 {
-		t.Fatal("navigation must be dropped while running")
-	}
-}
-
 func TestArmThenNotPendingLeavesNoStuckArm(t *testing.T) {
 	q, m := setup(t)
 	m, _ = press(m, " ")
@@ -1379,16 +1364,11 @@ func TestOtherKeyDisarmsCancelAndIsNotActedOn(t *testing.T) {
 func TestCCCancelsLiveRun(t *testing.T) {
 	_, m := setup(t)
 	called := false
-	m.running, m.runningID, m.cancelRun = true, m.item().ID, func() { called = true }
+	m.runs = map[string]*run{m.item().ID: {m.reviewed, func() { called = true }}}
 	m, _ = press(m, "c")
 	m, _ = press(m, "c")
 	if !called {
 		t.Fatal("c c did not cancel the run in progress")
-	}
-	m.focus, m.ii = 1, 0
-	m, _ = press(m, "j")
-	if m.ii != 0 {
-		t.Fatal("other keys are still dropped while running")
 	}
 }
 

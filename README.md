@@ -112,8 +112,12 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 - **You:** run `handoff` (or `! handoff` from the Claude prompt). Sessions | items | detail.
   Press `space` twice to run the selected item (any other key cancels), or click **Run** (then
   confirm). `r` is an alias for the first `space`. `x` or **Reject**, `o` re-open after a change,
-  `q` quit. After a run or reject, the selection jumps to the oldest pending item in the same
-  session, and `space` is ignored for a second after the jump, so a stray key can't run it.
+  `q` quit. After a run or reject, if the selection is still on that item, it jumps to the oldest
+  pending item in the same session, and `space` is ignored for a second after the jump, so a stray
+  key can't run it.
+  A run carries on while you read, move around and run or reject other items, so several can run
+  at once. `c` twice (or **Cancel run**) stops the selected one, and while any is running `q` asks
+  for a second `q`.
   The sessions pane shows each session's `/resume` title (a custom `/rename` title wins), its
   folder, age and pending count. The detail pane is in sections: status chips, description,
   warnings, Command (one flag per line, every word verbatim), Why, attached files, Integrity and
