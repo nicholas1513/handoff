@@ -48,6 +48,30 @@ is refused (`modified`) if the target changes after they opened it. A missing ta
 This is the one case where staging for a file denied to you is fine, and only when the user asked for
 that change: they review the exact diff before anything is written. One file per item.
 
+## Hand over commits
+
+To land commits you made in a scratch clone in the user's repo, write them to a patch file yourself,
+then stage `git am` of it, exactly in this form and with no other options:
+
+```
+git -C <scratch> format-patch --stdout <base>..HEAD > <file>.patch
+handoff add --wait --desc "<what the commits do>" --reason sandbox-blocked \
+  --file commits.patch=<file>.patch -- git -C <repo> am {file:commits.patch}
+```
+
+The viewer applies the patch with `git am` in a copy of the repo and shows the user each commit's
+author, message and diff as git made them; the run applies the same reviewed copy. Never stage a
+`git pull` or `git fetch` from a scratch path: the user sees only the path, not the changes, and the
+clone can change before they run it.
+
+The repo's HEAD is pinned when the user reviews the item. If the repo moves on before it runs, the
+run is refused (`modified`): rebase your commits onto the repo's current HEAD and stage a new patch.
+The repo needs at least one commit: `git am` into a repo with none is refused.
+
+If `git am` fails (a commit doesn't apply), the repo is left mid-am and any further `git am` fails
+too. Don't stage another one: tell the user, who either resolves it and runs `git am --continue` or
+runs `git am --abort`. Then rebase your commits onto the repo's current HEAD and stage a new patch.
+
 ## Revoke what you no longer want
 
 If an item hasn't run yet and you no longer want it (you staged a corrected or combined version,
