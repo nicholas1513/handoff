@@ -265,16 +265,48 @@ func cutLines(lines []string, x, inner int) ([]string, int) {
 type viewerSettings struct {
 	DiffWrap       bool `json:"diff_wrap"`
 	AttachmentWrap bool `json:"attachment_wrap"`
+	// how an am item's commits are reviewed: "vscode", "patch" (drawn here), or "" for auto, which is resolved at
+	// each start and never saved, so installing or removing VS Code changes it
+	CommitReview string `json:"commit_review,omitempty"`
 }
 
-// settingRows are the overlay's toggles, in display order.
-var settingRows = []struct {
-	label string
-	on    func(*viewerSettings) *bool
-}{
-	{"Diff word wrap", func(s *viewerSettings) *bool { return &s.DiffWrap }},
-	{"Attachment word wrap", func(s *viewerSettings) *bool { return &s.AttachmentWrap }},
+// commitReview is the setting's choice, else "vscode" when VS Code is installed, else "patch".
+func commitReview(s viewerSettings, vscode bool) string {
+	switch {
+	case s.CommitReview == "vscode" || s.CommitReview == "patch":
+		return s.CommitReview
+	case vscode:
+		return "vscode"
+	}
+	return "patch"
 }
+
+// settingRows are the overlay's rows, in display order: a setting's value as drawn, and a toggle of it. vscode is
+// whether VS Code is installed, which auto resolves by.
+var settingRows = []struct {
+	label  string
+	value  func(s viewerSettings, vscode bool) string
+	toggle func(s *viewerSettings, vscode bool)
+}{
+	{"Diff word wrap", func(s viewerSettings, _ bool) string { return onOff(s.DiffWrap) },
+		func(s *viewerSettings, _ bool) { s.DiffWrap = !s.DiffWrap }},
+	{"Attachment word wrap", func(s viewerSettings, _ bool) string { return onOff(s.AttachmentWrap) },
+		func(s *viewerSettings, _ bool) { s.AttachmentWrap = !s.AttachmentWrap }},
+	{"Commit review", func(s viewerSettings, vscode bool) string {
+		v := map[string]string{"vscode": "[ VS Code ]", "patch": "[ viewer ]"}[commitReview(s, vscode)]
+		if commitReview(s, vscode) != s.CommitReview {
+			v += " (auto)"
+		}
+		return v
+	}, func(s *viewerSettings, vscode bool) {
+		s.CommitReview = map[string]string{"vscode": "patch", "patch": "vscode"}[commitReview(*s, vscode)]
+		if s.CommitReview == commitReview(viewerSettings{}, vscode) { // back to what auto picks: auto again
+			s.CommitReview = ""
+		}
+	}},
+}
+
+func onOff(on bool) string { return map[bool]string{true: "[ on ] ", false: "[ off ]"}[on] }
 
 func settingsPath(root string) string { return filepath.Join(root, "viewer.json") }
 
@@ -309,14 +341,11 @@ const settingsRow = 3
 func (m model) overlay() (lines []string, x, y int) {
 	rows := []string{section.Render("Settings"), ""}
 	for i, r := range settingRows {
-		state, mark := "[ off ]", "  "
-		if *r.on(&m.settings) {
-			state = "[ on ] "
-		}
+		mark := "  "
 		if i == m.menuSel {
 			mark = "› "
 		}
-		rows = append(rows, mark+fmt.Sprintf("%-22s", r.label)+bold.Render(state))
+		rows = append(rows, mark+fmt.Sprintf("%-22s", r.label)+bold.Render(r.value(m.settings, m.vscode != nil)))
 	}
 	body := strings.Join(append(rows, "", dim.Render("↑↓ select · space / click toggle · esc close")), "\n")
 	lines = strings.Split(focused.Padding(0, 1).Render(body), "\n")
