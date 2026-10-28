@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const Expiry = 24 * time.Hour
@@ -207,11 +210,36 @@ func (q *Queue) Load(id string) (Item, error) {
 	if !safeName.MatchString(id) {
 		return Item{}, fmt.Errorf("bad item id %q", id)
 	}
-	b, err := os.ReadFile(filepath.Join(q.itemDir(id), "item.json"))
+	b, err := q.readPlain(id, "item.json")
 	if err != nil {
 		return Item{}, err
 	}
 	return parseAs(b, id)
+}
+
+// readPlain reads queue/<id>/<path>, which must be a plain file with no other link to it, reached through no symlink:
+// queue/ is agent-written, and a link there would have the viewer read a file the agent can't (a key, a login) into
+// snap/. It is opened without waiting, so a FIFO is refused, not waited on.
+func (q *Queue) readPlain(id string, path ...string) ([]byte, error) {
+	name := filepath.Join(append([]string{q.itemDir(id)}, path...)...)
+	fd, err := unix.Open(filepath.Join(q.Root, "queue"), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	for _, p := range append([]string{id}, path...) {
+		if err != nil {
+			break
+		}
+		next, e := unix.Openat(fd, p, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		unix.Close(fd)
+		fd, err = next, e
+	}
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: name, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), name)
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() || fi.Sys().(*syscall.Stat_t).Nlink != 1 {
+		return nil, fmt.Errorf("%s is not a plain file", name)
+	}
+	return io.ReadAll(f)
 }
 
 // parseAs is parse of the item.json read from directory id, which must name that directory: snapshots, claims,
@@ -245,8 +273,7 @@ func (q *Queue) List() (items []Item, invalid []string, err error) {
 
 // read loads item.json and every attachment in one pass and hashes exactly those bytes.
 func (q *Queue) read(id string) (Item, map[string][]byte, string, []byte, error) {
-	dir := q.itemDir(id)
-	raw, err := os.ReadFile(filepath.Join(dir, "item.json"))
+	raw, err := q.readPlain(id, "item.json")
 	if err != nil {
 		return Item{}, nil, "", nil, err
 	}
@@ -259,7 +286,7 @@ func (q *Queue) read(id string) (Item, map[string][]byte, string, []byte, error)
 	put(raw)
 	files := map[string][]byte{}
 	for _, name := range it.Files { // validated and sorted by Add
-		b, err := os.ReadFile(filepath.Join(dir, "files", name))
+		b, err := q.readPlain(id, "files", name)
 		if err != nil {
 			return Item{}, nil, "", nil, err
 		}

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import setup
-from setup import QUEUE_ENTRY, Setup, SetupError, add_allow_write
+from setup import DENY_READ, QUEUE_ENTRY, Setup, SetupError, add_allow_write, add_deny_read
 
 
 class AddAllowWriteTest(unittest.TestCase):
@@ -50,6 +50,16 @@ def fake_run(outputs):
     return run, calls
 
 
+class AddDenyReadTest(unittest.TestCase):
+    home = Path("/home/u")
+
+    def test_adds_once_including_expanded_form(self):
+        s = {"sandbox": {"filesystem": {"denyRead": ["~/.azure", "/home/u/.handoff/snap"]}}}
+        self.assertTrue(add_deny_read(s, self.home))
+        self.assertEqual(s["sandbox"]["filesystem"]["denyRead"], ["~/.azure", "/home/u/.handoff/snap", "~/.handoff/review"])
+        self.assertFalse(add_deny_read(s, self.home))
+
+
 class SetupStepsTest(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp())
@@ -64,7 +74,8 @@ class SetupStepsTest(unittest.TestCase):
         self.settings.parent.mkdir()
         self.settings.write_text('{"model": "x"}')
         self.make().allow_queue_writes()
-        self.assertEqual(json.loads(self.settings.read_text())["sandbox"]["filesystem"]["allowWrite"], [QUEUE_ENTRY])
+        fs = json.loads(self.settings.read_text())["sandbox"]["filesystem"]
+        self.assertEqual((fs["allowWrite"], fs["denyRead"]), ([QUEUE_ENTRY], list(DENY_READ)))
         self.assertEqual(len(list(self.settings.parent.glob("settings.json.bak.*"))), 1)
         self.assertEqual(list(self.settings.parent.glob("*.handoff-tmp")), [])
 

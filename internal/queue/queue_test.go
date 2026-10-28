@@ -458,3 +458,47 @@ func TestAmRepoRunsNothing(t *testing.T) {
 		t.Fatal("a FIFO for HEAD holds Snapshot up")
 	}
 }
+
+// TestSnapshotReadsOnlyPlainFiles: queue/ is agent-written. An attachment that links to another file (a symlink or a
+// hard link), or a files/ or item directory that is a symlink, would have Snapshot copy a file the agent can't read into
+// snap/, where it can; a FIFO would hold the viewer up. Each is refused.
+func TestSnapshotReadsOnlyPlainFiles(t *testing.T) {
+	for _, c := range []string{"symlink", "hard link", "files dir", "item dir", "fifo"} {
+		t.Run(c, func(t *testing.T) {
+			q, body := newQueue(t)
+			it := addOne(t, q, body)
+			outside := t.TempDir() // a directory the agent can't read, holding a file named as the attachment
+			secret := filepath.Join(outside, "files", "body.json")
+			os.MkdirAll(filepath.Dir(secret), 0o700)
+			os.WriteFile(secret, []byte("top-secret"), 0o600)
+			dir := q.itemDir(it.ID)
+			att := filepath.Join(dir, "files", "body.json")
+			os.Remove(att)
+			var err error
+			switch c {
+			case "symlink":
+				err = os.Symlink(secret, att)
+			case "hard link":
+				err = os.Link(secret, att)
+			case "files dir":
+				os.RemoveAll(filepath.Dir(att))
+				err = os.Symlink(filepath.Dir(secret), filepath.Dir(att))
+			case "item dir":
+				os.Rename(filepath.Join(dir, "item.json"), filepath.Join(outside, "item.json"))
+				os.RemoveAll(dir)
+				err = os.Symlink(outside, dir)
+			case "fifo":
+				err = syscall.Mkfifo(att, 0o600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := q.Snapshot(it.ID); err == nil {
+				t.Fatal("snapshotted")
+			}
+			if b, _ := os.ReadFile(filepath.Join(q.Root, "snap", it.ID, "body.json")); len(b) > 0 {
+				t.Fatalf("snap holds %q", b)
+			}
+		})
+	}
+}

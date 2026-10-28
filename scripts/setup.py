@@ -20,6 +20,9 @@ from pathlib import Path
 QUEUE_ENTRY = "~/.handoff/queue"
 # allowWrite entries that would also expose the hook-owned sessions/ and snap/ folders.
 BROAD_ENTRIES = ("~", "~/", "~/.handoff", "~/.handoff/")
+# Viewer-only folders the agent must not read either: snap/ holds copies of files the viewer read for review (an edit's
+# target, attachments), review/ checkouts of repos the agent may not be able to read.
+DENY_READ = ("~/.handoff/snap", "~/.handoff/review")
 
 
 class SetupError(Exception):
@@ -51,6 +54,14 @@ def add_allow_write(settings, entry, home):
         return False, broad
     allow.append(entry)
     return True, broad
+
+
+def add_deny_read(settings, home):
+    """Add DENY_READ to sandbox.filesystem.denyRead in place. Returns whether any entry was added."""
+    deny = settings.setdefault("sandbox", {}).setdefault("filesystem", {}).setdefault("denyRead", [])
+    added = [e for e in DENY_READ if e not in deny and e.replace("~", str(home), 1) not in deny]
+    deny.extend(added)
+    return bool(added)
 
 
 class Setup:
@@ -136,18 +147,19 @@ class Setup:
         self._out("created ~/.handoff/queue")
 
     def allow_queue_writes(self):
-        self.step("4. Sandbox write access to the queue (only the queue)")
+        self.step("4. Sandbox access: write only the queue, read neither snap/ nor review/")
         path = self.settings_path
         before = path.read_text() if path.exists() else ""
         settings = json.loads(before) if before.strip() else {}
         changed, broad = add_allow_write(settings, QUEUE_ENTRY, self.home)
+        changed = add_deny_read(settings, self.home) or changed
         if broad:
             self.warn(
                 f"allowWrite contains {', '.join(broad)}. That lets the agent write the hook-owned\n"
                 f"  sessions/ and snap/ folders and forge provenance. Narrow it to {QUEUE_ENTRY}."
             )
         if not changed:
-            self._out(f"{QUEUE_ENTRY} is already in allowWrite")
+            self._out(f"{QUEUE_ENTRY} is already in allowWrite, and {' and '.join(DENY_READ)} in denyRead")
             return
 
         # json keeps key order, so the diff shows only the added entry (plus any reformatting).
@@ -156,7 +168,8 @@ class Setup:
             self._out("".join(difflib.unified_diff(
                 before.splitlines(keepends=True), after.splitlines(keepends=True), str(path), str(path) + " (new)")))
         if not self.assume_yes and not self._ask(f"Apply this change to {path}? [y/N] ").strip().lower().startswith("y"):
-            raise SetupError(f'not changed. Add "{QUEUE_ENTRY}" to sandbox.filesystem.allowWrite yourself.')
+            raise SetupError(f'not changed. Add "{QUEUE_ENTRY}" to sandbox.filesystem.allowWrite and '
+                             f'{json.dumps(list(DENY_READ))} to sandbox.filesystem.denyRead yourself.')
 
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
@@ -166,7 +179,7 @@ class Setup:
         tmp = path.with_name(path.name + ".handoff-tmp")
         tmp.write_text(after)
         os.replace(tmp, path)  # atomic, so a crash can't leave half a settings file
-        self._out(f"added {QUEUE_ENTRY} to allowWrite")
+        self._out(f"saved: {QUEUE_ENTRY} writable, {' and '.join(DENY_READ)} unreadable")
 
     def install_plugin(self):
         self.step("5. Claude Code plugin")
