@@ -160,6 +160,41 @@ func TestDetailWarningsAboveCommand(t *testing.T) {
 	}
 }
 
+func TestPullFromLocalPathWarns(t *testing.T) {
+	for _, argv := range [][]string{
+		{"git", "-C", "/repo", "pull", "--ff-only", "/tmp/claude-501/clone", "patch-view"},
+		{"/usr/bin/git", "-c", "protocol.file.allow=always", "--no-pager", "fetch", "file:///tmp/clone"},
+		{"git", "pull", "./clone"}, {"git", "fetch", "../clone", "main"}, {"git", "pull", "--rebase", "~/scratch/clone"},
+		{"git", "--git-dir", "/r/.git", "fetch", "--depth", "1", "/tmp/clone"},
+		{"git", "-c", "remote.x.url=/tmp/scratch", "fetch", "x"}, {"git", "-c", "URL./tmp/s.insteadOf=origin", "pull", "origin"},
+		{"git", "-c", "alias.f=fetch", "f", "/tmp/scratch"}, {"git", "--attr-source", "HEAD", "pull", "/tmp/scratch"},
+		{"git", "pull", ".scratch/src", "main"}, {"git", "pull", ".."}, {"git", "fetch", ".claude/worktrees/w", "side"},
+		{"git", "--config-env=remote.x.url=HOME", "fetch", "x"}, {"git", "--config-env=URL./tmp/s.insteadOf=V", "pull", "origin"},
+	} {
+		if !pullsLocalPath(argv) {
+			t.Errorf("%q: no warning", argv)
+		}
+	}
+	for _, argv := range [][]string{
+		{"git", "pull"}, {"git", "-C", "/tmp/clone", "pull"}, {"git", "-C", "/repo", "pull", "origin", "main"},
+		{"git", "fetch", "https://github.com/x/y.git"}, {"git", "fetch", "git@github.com:x/y.git"},
+		{"git", "fetch", "ssh://host/srv/y.git"}, {"git", "fetch", "--upload-pack", "/opt/git/bin/git-upload-pack", "origin"},
+		{"git", "push", "/tmp/clone"}, {"git", "-C", "/repo", "am", "/tmp/x.patch"}, {"gitk", "pull", "/tmp/clone"},
+		{"git", "pull", ".", "main"}, {"git", "-c"}, {"git", "--config-env=core.pager=PAGER", "pull", "origin"},
+	} {
+		if pullsLocalPath(argv) {
+			t.Errorf("%q: warned", argv)
+		}
+	}
+	_, m := setup(t)
+	m = withItem(t, m, queue.Item{Description: "x", Argv: []string{"git", "-C", "/repo", "pull", "--ff-only", "/tmp/clone", "b"}}, nil, 200)
+	out := ansi.Strip(m.detail())
+	i, j := strings.Index(out, "⚠ pulls from a local path: the changes aren't shown here; ask for a patch (git am) instead"), strings.Index(out, "── Command")
+	if i < 0 || i > j {
+		t.Fatalf("the warning should precede the Command section:\n%s", out)
+	}
+}
+
 func TestDetailNarrowTerminal(t *testing.T) {
 	_, m := setup(t)
 	argv := []string{"az", "rest", "--method", "put", "--url", "https://dev.azure.com/Org/Example%20Proj/_apis/dashboard/dashboards/3c9a1f2e-7b4d-4e8a-9f61-2d5c8b0e7a43?api-version=7.1-preview.3"}

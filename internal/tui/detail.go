@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -153,6 +154,43 @@ func methodOf(argv []string) string {
 		}
 	}
 	return mt
+}
+
+// pullsLocalPath: argv is git pull or fetch from a directory rather than a remote, so the reviewer sees a path, not the
+// changes, and the directory can change between review and run.
+func pullsLocalPath(argv []string) bool {
+	if len(argv) == 0 || filepath.Base(argv[0]) != "git" {
+		return false
+	}
+	i := 1
+	for ; i < len(argv) && strings.HasPrefix(argv[i], "-"); i++ { // git's own options
+		if v, ok := strings.CutPrefix(argv[i], "--config-env="); ok && pullsLocalPath([]string{"git", "-c", v}) {
+			return true // the attached form, read as -c reads its name=value
+		}
+		switch argv[i] {
+		case "-c", "--config-env": // a remote's URL, a URL rewrite or an alias set here can point anywhere
+			if v := strings.ToLower(argv[min(i+1, len(argv)-1)]); strings.HasPrefix(v, "remote.") ||
+				strings.HasPrefix(v, "url.") || strings.HasPrefix(v, "alias.") {
+				return true
+			}
+			i++
+		case "-C", "--git-dir", "--work-tree", "--namespace", "--attr-source":
+			i++ // and their value
+		}
+	}
+	if i >= len(argv) || argv[i] != "pull" && argv[i] != "fetch" {
+		return false
+	}
+	for j := i + 1; j < len(argv); j++ { // a refspec never looks like a path, so any word that does is the repository
+		switch a := argv[j]; {
+		case a == "--upload-pack" || a == "-o" || a == "--server-option":
+			j++ // its value is a program or a string, not the repository
+		case strings.HasPrefix(a, "/") || strings.HasPrefix(a, ".") && a != "." || // no remote or ref starts with "."
+			strings.HasPrefix(a, "~") || strings.HasPrefix(a, "file://"):
+			return true
+		}
+	}
+	return false
 }
 
 func heading(title string) string {
@@ -794,6 +832,9 @@ func (m model) detailSegs() []seg {
 	}
 	if runner.RunsInterpreter(it.Argv) {
 		p("%s", warn.Render(fmt.Sprintf("⚠ runs an interpreter (%s): its arguments are code", sanitize(it.Argv[0]))))
+	}
+	if pullsLocalPath(it.Argv) {
+		p("%s", warn.Render("⚠ pulls from a local path: the changes aren't shown here; ask for a patch (git am) instead"))
 	}
 	for _, pr := range d.problems {
 		p("%s", warn.Render("settings problem: "+sanitize(pr)))
