@@ -64,7 +64,7 @@ type sessionRow struct {
 	invalid []string             // only on the "invalid" pseudo-session
 	nOut    int                  // items[:nOut] are outstanding; fixed at refresh so headers don't move between paint and click
 	fin     map[string]time.Time // finish time per completed item, snapshot at refresh
-	state   map[string]string    // state per item, snapshot at refresh: drawing reads no result files per frame
+	state   map[string]string    // state per item, read at refresh and by loadData: drawing reads no result files
 	title   string               // the transcript's /resume title, read at refresh
 }
 
@@ -510,8 +510,6 @@ func (m *model) startRun() tea.Cmd {
 	q, r := m.q, *m.reviewed
 	ctx, cancel := context.WithCancel(context.Background())
 	m.runningID, m.cancelRun = r.Item.ID, cancel
-	m.restate(r.Item.ID)
-	m.loadData()
 	return func() tea.Msg {
 		_, err := runner.Run(ctx, q, r, time.Now())
 		return runDone{id: r.Item.ID, err: err}
@@ -530,12 +528,12 @@ func (m model) cancelable() bool {
 	return m.q.State(*it, time.Now()) == queue.Running
 }
 
-// drawnState is the selected item's state as drawn: this viewer's run in progress, else the detail's snapshot.
+// drawnState is the selected item's state as drawn (see shownState), or "".
 func (m model) drawnState() string {
-	if it := m.item(); it != nil && m.running && it.ID == m.runningID {
-		return queue.Running
+	if it := m.item(); it != nil {
+		return m.shownState(m.session(), *it)
 	}
-	return m.data.state
+	return ""
 }
 
 // shownPending and shownCancelable are pending() and cancelable() as drawn: from snapshots, so drawing reads no files.
@@ -551,7 +549,7 @@ func (m model) shownCancelable() bool {
 	if m.running {
 		return it.ID == m.runningID
 	}
-	return m.data.state == queue.Running
+	return m.drawnState() == queue.Running
 }
 
 // cancel stops the selected run: this viewer's own via its context, a stale one via runner.CancelStale.
@@ -583,8 +581,7 @@ func (m *model) reject() {
 		err = m.q.WriteResult(it, queue.Result{State: queue.Rejected, ExitCode: -1, RanAt: time.Now(), SHA256Reviewed: m.reviewed.Hash})
 	}
 	m.confirm, m.armed, m.status = false, false, "rejected"
-	m.restate(it.ID) // also on an error: the claim may have landed
-	m.loadData()
+	m.loadData() // also on an error: the claim may have landed
 	if err != nil {
 		m.status = "reject: " + err.Error()
 		return
@@ -615,17 +612,14 @@ func (m *model) oldestPending(s *sessionRow) (int, bool) {
 	return best, best >= 0
 }
 
-// restate re-reads one item's state after this viewer changed it (reject, cancel, a run starting or ending),
-// so the lists and the detail show it at once instead of at the next refresh.
-func (m *model) restate(id string) {
-	m.rows = slices.Clone(m.rows) // copy on write, like the maps: other copies of the model share the array
-	for i := range m.rows {
-		r := &m.rows[i]
-		for _, it := range r.items {
-			if it.ID == id {
-				r.state = with(r.state, id, m.q.State(it, m.now()))
-				m.rowsGen = nextGen()
-			}
+// restate records one item's state in the rows when it differs. loadData calls it with the state it reads, so the
+// lists show what the detail shows at once: after a reject, or on opening an item that changed since the last refresh.
+func (m *model) restate(id, st string) {
+	for i, r := range m.rows {
+		if old, ok := r.state[id]; ok && old != st {
+			m.rows = slices.Clone(m.rows) // copy on write, like the maps: other copies of the model share the array
+			m.rows[i].state = with(r.state, id, st)
+			m.rowsGen = nextGen()
 		}
 	}
 }
