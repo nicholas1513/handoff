@@ -674,8 +674,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// arm is the only way a key starts a run; holds the advanceGuard check.
-func (m *model) arm() { m.armed = m.pending() && m.now().Sub(m.advancedAt) >= advanceGuard }
+// arm is the only way a key starts a run; holds the advanceGuard check. Like every prompt, it is set only when the
+// screen shows the item as pending (the drawn state) and the disk still says so (the live one).
+func (m *model) arm() {
+	m.armed = m.shownPending() && m.pending() && m.now().Sub(m.advancedAt) >= advanceGuard
+}
 
 func (m model) key(k string) (tea.Model, tea.Cmd) {
 	if m.menu { // the overlay takes every key while open
@@ -732,7 +735,7 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 	case "x":
 		m.reject()
 	case "c":
-		m.cancelArmed = m.cancelable()
+		m.cancelArmed = m.shownCancelable() && m.cancelable()
 	case "[", "pgup", "]", "pgdown":
 		if b, ok := m.box(m.selBox()); m.focus == 2 && ok {
 			d := b.cap
@@ -881,7 +884,7 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if _, x := m.footer(); msg.X >= x && msg.X < x+len(settingsKey) {
 			m.menu = true
 		}
-	case pane == 2 && msg.Y == buttonY && m.cancelable():
+	case pane == 2 && msg.Y == buttonY && m.shownCancelable() && m.cancelable():
 		x := msg.X - sw - iw
 		switch {
 		case m.cancelConfirm && x >= noX && x < noX+6:
@@ -900,7 +903,7 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case m.confirm && x >= yesX && x < yesX+12:
 			return m, m.startRun()
 		case !m.confirm && x >= runX && x < runX+7:
-			m.confirm = m.pending()
+			m.confirm = m.shownPending() && m.pending()
 		case !m.confirm && x >= rejectX && x < rejectX+10:
 			m.reject()
 		}
