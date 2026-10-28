@@ -117,8 +117,9 @@ type model struct {
 	rc      *renderCache
 	pc      *paneCache
 
-	am       *amView // the open am item's review copy, once built (see reviewCmd)
-	amFlight *flight // the review copy being built, if any
+	am       *amView                // the open am item's review copy, once built (see reviewCmd)
+	amFlight *flight                // the review copy being built, if any
+	vscode   func(dir string) error // opens a directory in VS Code; nil when it isn't installed
 
 	now        func() time.Time
 	advancedAt time.Time
@@ -138,7 +139,8 @@ func Run(q *queue.Queue, home string) error {
 }
 
 func newModel(q *queue.Queue, home string) model {
-	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}, now: time.Now, rc: newRenderCache(), pc: newPaneCache()}
+	m := model{q: q, home: home, w: 120, h: 40, titles: titleCache{}, now: time.Now, rc: newRenderCache(), pc: newPaneCache(),
+		vscode: findVSCode(home)}
 	var err error
 	if m.settings, err = loadSettings(q.Root); err != nil {
 		m.status = "settings: " + err.Error()
@@ -383,10 +385,9 @@ func panIn(l layout) string {
 	return ""
 }
 
-// toggleSetting flips settingRows[i] and saves.
+// toggleSetting toggles settingRows[i] and saves.
 func (m *model) toggleSetting(i int) {
-	p := settingRows[i].on(&m.settings)
-	*p = !*p
+	settingRows[i].toggle(&m.settings, m.vscode != nil)
 	m.boxX = nil
 	if err := saveSettings(m.q.Root, m.settings); err != nil {
 		m.status = "settings: " + err.Error()
@@ -753,6 +754,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refresh()
 		m.advance(msg.id)
+	case statusMsg:
+		m.status = string(msg)
 	case *amView:
 		if f := m.amFlight; f != nil && msg.key == f.key {
 			f.stop()
@@ -855,6 +858,10 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		m.open()
 	case "s":
 		m.menu = true
+	case "v":
+		if m.layout().open >= 0 {
+			return m, m.openCmd()
+		}
 	case "+":
 		if _, ok := m.box(diffBox); ok {
 			m.expandDiff(nil)
@@ -910,6 +917,9 @@ func (m model) footer() (string, int) {
 	}
 	if panIn(l) != "" {
 		keys = append(keys, "< > pan")
+	}
+	if l.open >= 0 {
+		keys = append(keys, "v open in VS Code")
 	}
 	if m.changed {
 		keys = append(keys, "o re-open")
@@ -1011,6 +1021,9 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.reject()
 		}
 		m.focus = 2
+	case pane == 2 && m.openAt(msg.Y):
+		m.focus = 2
+		return m, m.openCmd()
 	case pane < 2 && msg.Y >= listTop:
 		row := msg.Y - listTop
 		vis := row < max(5, m.h-3)-1 // only drawn rows are clickable

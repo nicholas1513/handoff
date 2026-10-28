@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ func keyOf(r *queue.Reviewed) reviewKey {
 // modified once built.
 type amView struct {
 	key        reviewKey
+	dir        string  // the review copy, absolute
 	repo, base string  // the repository's top level and the commit git am applied to
 	sum        string  // "N commits · F files changed, +A −B"
 	bin        int     // binary files, whose contents the log doesn't show
@@ -42,15 +44,29 @@ type amView struct {
 	err        string  // why the build failed: git's own error, which the run would hit too
 }
 
-// reviews serializes builds, which remove and rebuild an item's directory, and keeps each item's last good build.
+// reviews serializes builds, which remove the item's other review copies, and keeps each item's last good build.
 // shortcut: entries stay until the viewer quits; drop finished items' if long sessions show up.
 var reviews = struct {
 	sync.Mutex
 	built map[string]*amView
 }{built: map[string]*amView{}}
 
-// reviewDir is an item's review copy, beside queue/ so the sandbox can't write it.
-func reviewDir(root, id string) string { return filepath.Join(root, "review", id) }
+// newReviewDir makes a new, empty folder for a review copy of item id, beside queue/ so the sandbox can't write it, and
+// returns its absolute path. Every build gets its own: VS Code trusts a folder by its path, so content not yet reviewed
+// (a rewritten patch or object, a moved HEAD, a reused id) never lands in a folder the reviewer trusted.
+func newReviewDir(root, id string) (string, error) {
+	review, err := filepath.Abs(filepath.Join(root, "review"))
+	if err == nil {
+		err = os.MkdirAll(review, 0o700)
+	}
+	if err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(review, id+"-*")
+}
+
+// reviewItem is the id of the item whose review copy is the directory named name.
+func reviewItem(name string) string { return name[:max(strings.LastIndexByte(name, '-'), 0)] }
 
 // amKey is the open item's review copy key, if it is an am item.
 func (m model) amKey() (reviewKey, bool) {
@@ -83,6 +99,47 @@ func (m *model) amReady() bool {
 	}
 	return true
 }
+
+// findVSCode is how to open a directory in VS Code, nil when it isn't installed: the code command on PATH, else on
+// macOS the app in /Applications or ~/Applications. Tests replace it.
+var findVSCode = func(home string) func(dir string) error {
+	if code, err := exec.LookPath("code"); err == nil {
+		return func(dir string) error { return exec.Command(code, dir).Run() }
+	}
+	if runtime.GOOS == "darwin" {
+		for _, apps := range []string{"/Applications", filepath.Join(home, "Applications")} {
+			if _, err := os.Stat(filepath.Join(apps, "Visual Studio Code.app")); err == nil {
+				return func(dir string) error { return exec.Command("open", "-a", "Visual Studio Code", dir).Run() }
+			}
+		}
+	}
+	return nil
+}
+
+// inVSCode: am items are reviewed in VS Code, by the setting, else (auto) when VS Code is installed.
+func (m model) inVSCode() bool { return commitReview(m.settings, m.vscode != nil) == "vscode" }
+
+// openCmd opens the open am item's review copy in VS Code off the event loop. The status line says how it went.
+func (m *model) openCmd() tea.Cmd {
+	if m.vscode == nil {
+		m.status = "VS Code not found: no code command on PATH, nor the app in Applications"
+		return nil
+	}
+	m.status = "preparing review copy…"
+	root, r, open := m.q.Root, *m.reviewed, m.vscode
+	return func() tea.Msg {
+		ctx, stop := context.WithTimeout(context.Background(), time.Minute)
+		defer stop()
+		dir, err := openReview(ctx, root, r, open)
+		if err != nil {
+			return statusMsg("VS Code: " + err.Error())
+		}
+		return statusMsg("opened in VS Code: " + dir)
+	}
+}
+
+// statusMsg is a command's outcome for the status line.
+type statusMsg string
 
 // flight is a review copy being built, and how to stop it.
 type flight struct {
@@ -124,19 +181,32 @@ func (m model) build(ctx context.Context) tea.Cmd {
 // and none of the repository's config but the settings it copies because they change what git am does (am, mailinfo,
 // i18n, apply and core.whitespace), so nothing an agent planted runs.
 func buildReview(ctx context.Context, root string, r queue.Reviewed) *amView {
-	_, file, _ := queue.Am(r.Item)
-	v := &amView{key: keyOf(&r), repo: r.AmRepo, base: r.AmBase}
 	reviews.Lock()
 	defer reviews.Unlock()
+	return reviewCopy(ctx, root, r)
+}
+
+// reviewCopy is buildReview with reviews locked.
+func reviewCopy(ctx context.Context, root string, r queue.Reviewed) *amView {
+	_, file, _ := queue.Am(r.Item)
+	v := &amView{key: keyOf(&r), repo: r.AmRepo, base: r.AmBase}
 	if old := reviews.built[r.Item.ID]; old != nil && old.key == v.key {
 		return old
 	}
 	err := queue.ErrNoCommit // and the run is refused with it
 	if r.AmBase != "" {
-		delete(reviews.built, r.Item.ID) // its directory is about to go
+		delete(reviews.built, r.Item.ID)
+		ents, _ := os.ReadDir(filepath.Join(root, "review"))
+		for _, e := range ents { // the item's other builds: what they hold was replaced
+			if reviewItem(e.Name()) == r.Item.ID {
+				os.RemoveAll(filepath.Join(root, "review", e.Name()))
+			}
+		}
 		var patch string
 		if patch, err = filepath.Abs(filepath.Join(r.SnapDir, file)); err == nil {
-			err = v.build(ctx, reviewDir(root, r.Item.ID), patch)
+			if v.dir, err = newReviewDir(root, r.Item.ID); err == nil {
+				err = v.build(ctx, v.dir, patch)
+			}
 		}
 	}
 	if err != nil {
@@ -147,12 +217,26 @@ func buildReview(ctx context.Context, root string, r queue.Reviewed) *amView {
 	return v
 }
 
-// build makes the review copy in dir, git am of patch on v.base, keeps its commits on the branch "reviewed", and
-// reads them back.
-func (v *amView) build(ctx context.Context, dir, patch string) error {
-	if err := os.RemoveAll(dir); err != nil {
-		return err
+// openReview opens r's review copy with open, built again if its directory is gone.
+func openReview(ctx context.Context, root string, r queue.Reviewed, open func(dir string) error) (string, error) {
+	reviews.Lock()
+	if old := reviews.built[r.Item.ID]; old != nil {
+		if _, err := os.Stat(old.dir); err != nil {
+			delete(reviews.built, r.Item.ID)
+		}
 	}
+	v := reviewCopy(ctx, root, r)
+	reviews.Unlock() // an editor slow to return holds up no build
+	if v.err != "" {
+		return "", errors.New(v.err)
+	}
+	return v.dir, open(v.dir)
+}
+
+// build makes the review copy in dir, an empty folder, git am of patch on v.base, keeps its commits on the branch
+// "reviewed", and reads them back. Then it puts HEAD back on the base, so that VS Code's Source Control shows the whole
+// change staged.
+func (v *amView) build(ctx context.Context, dir, patch string) error {
 	var err error
 	run := func(dir string, args ...string) (out string) {
 		if err == nil {
@@ -186,6 +270,9 @@ func (v *amView) build(ctx context.Context, dir, patch string) error {
 	}
 	_, amErr := git(ctx, dir, "am", "--quiet", patch) // if it stops partway, the run makes the commits before too
 	run(dir, "branch", "reviewed", "HEAD")
+	if amErr == nil {
+		run(dir, "reset", "--quiet", "--soft", v.base)
+	}
 	// a submodule's ignore setting or the user's diff.ignoreSubmodules would hide a gitlink change, and their
 	// diff.submodule would draw it as a log instead of a diff
 	num := run(dir, "diff", "--numstat", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", v.base, "reviewed")
@@ -311,8 +398,8 @@ func sweep(q *queue.Queue) tea.Cmd {
 		defer reviews.Unlock()
 		ents, _ := os.ReadDir(filepath.Join(q.Root, "review"))
 		for _, e := range ents {
-			if it, err := q.Load(e.Name()); err != nil || q.State(it, time.Now()) != queue.Pending {
-				os.RemoveAll(reviewDir(q.Root, e.Name()))
+			if it, err := q.Load(reviewItem(e.Name())); err != nil || q.State(it, time.Now()) != queue.Pending {
+				os.RemoveAll(filepath.Join(q.Root, "review", e.Name()))
 			}
 		}
 		return nil

@@ -205,6 +205,7 @@ func chip(text, color string) string {
 type seg struct {
 	text string
 	box  *box
+	open bool // text is the [ Open in VS Code ] button
 }
 
 type box struct {
@@ -322,6 +323,7 @@ type layoutKey struct {
 	w, h           int
 	home           string
 	settings       viewerSettings
+	vscode         bool // am items are reviewed in VS Code
 	look           look
 }
 
@@ -337,11 +339,12 @@ type detailLayout struct {
 	blank   string     // a row past the end
 	edges   [2]edges   // by selection
 	cells   [][]string // per framed box, each line as drawn by cell; filled as lines are first drawn
+	open    int        // the [ Open in VS Code ] row, -1: none
 }
 
 // detailLayout is the cached detail while the model's inputs are unchanged, else a new build of it.
 func (m model) detailLayout() *detailLayout {
-	k := layoutKey{data: m.data, reviewed: m.reviewed, am: m.shownAm(), state: m.drawnState(), changed: m.changed, w: m.w, h: m.h, home: m.home, settings: m.settings, look: lookNow()}
+	k := layoutKey{data: m.data, reviewed: m.reviewed, am: m.shownAm(), state: m.drawnState(), changed: m.changed, w: m.w, h: m.h, home: m.home, settings: m.settings, vscode: m.inVSCode(), look: lookNow()}
 	if m.openErr != nil {
 		k.openErr = m.openErr.Error()
 	}
@@ -349,13 +352,16 @@ func (m model) detailLayout() *detailLayout {
 		return d
 	}
 	_, _, dw := columns(m.w)
-	d := &detailLayout{key: k, diffExp: m.diffExp, boxX: m.boxX, blank: strings.Repeat(" ", dw-2)}
+	d := &detailLayout{key: k, diffExp: m.diffExp, boxX: m.boxX, blank: strings.Repeat(" ", dw-2), open: -1}
 	d.edges = [2]edges{m.edgesOf(false), m.edgesOf(true)}
 	m.boxTop = nil // built at top 0: tops are applied when drawing
 	d.segs = m.detailSegs()
 	for _, s := range d.segs {
 		switch {
 		case s.box == nil:
+			if s.open {
+				d.open = len(d.rows)
+			}
 			d.rows = append(d.rows, strings.Split(m.wrapDetail(strings.TrimSuffix(s.text, "\n")), "\n")...)
 		case s.box.framed:
 			d.boxes = append(d.boxes, placed{*s.box, len(d.rows) + 1})
@@ -387,11 +393,12 @@ type layout struct {
 	boxes []placed
 	sel   string // m.boxSel while it is framed, else the first framed box, else ""
 	n     int    // body rows
+	open  int    // the [ Open in VS Code ] row, -1: none
 }
 
 func (m model) layout() (l layout) {
 	d := m.detailLayout()
-	l.n = len(d.rows)
+	l.n, l.open = len(d.rows), d.open
 	for _, s := range d.segs {
 		if s.box != nil {
 			b := m.atTop(*s.box)
@@ -571,6 +578,14 @@ func (m *model) scrollBox(id string, d int) {
 		return
 	}
 	m.boxTop = with(m.boxTop, id, max(0, min(b.top+d, len(b.lines)-b.cap)))
+}
+
+const openBtn = "[ Open in VS Code ]"
+
+// openAt reports whether screen row y draws the [ Open in VS Code ] button.
+func (m model) openAt(y int) bool {
+	l := m.layout()
+	return l.open >= 0 && y > buttonY && y <= max(5, m.h-3) && y-buttonY-1+m.bodyTop(l.n) == l.open
 }
 
 // boxAt reports which framed box has screen row y as one of its content rows (body line k is at buttonY+1+k-scroll).
@@ -911,7 +926,13 @@ func (m model) detailSegs() []seg {
 				}
 				p("%s", sum)
 				p("%s", dim.Render("drawn from git am's result on "+m.tilde(v.repo)+" at "+v.base[:min(12, len(v.base))]))
-				addBox(m.amBox("file:"+name, v))
+				if v.err != "" || !m.inVSCode() { // VS Code opens only a whole result
+					addBox(m.amBox("file:"+name, v))
+				} else {
+					segs = append(segs, seg{text: b.String()}, seg{text: openBtn, open: true})
+					b.Reset()
+					p("%s", dim.Render("s settings → Commit review draws the commits here instead"))
+				}
 			}
 			if v.err != "" {
 				p("%s", warn.Render("⚠ "+sanitize(v.err)))

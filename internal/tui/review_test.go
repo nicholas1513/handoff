@@ -11,14 +11,17 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/nicholas1513/handoff/internal/queue"
 )
 
-// TestMain keeps the user's git config out of the tests: their hooks, signing and identity.
+// TestMain keeps the user's git config out of the tests (their hooks, signing and identity) and VS Code: tests that
+// open it inject an opener.
 func TestMain(m *testing.M) {
+	findVSCode = func(string) func(string) error { return nil }
 	for k, v := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"} {
 		os.Setenv(k, v)
@@ -297,13 +300,13 @@ func TestSweepRemovesFinishedItemsReviewCopies(t *testing.T) {
 	items, _, _ := q.List()
 	finished(t, q, items[0], queue.Succeeded, "")
 	for _, id := range []string{items[0].ID, items[1].ID, "gone"} {
-		if err := os.MkdirAll(filepath.Join(reviewDir(q.Root, id), "x"), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Join(q.Root, "review", id+"-1", "x"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	sweep(q)()
 	for id, keep := range map[string]bool{items[0].ID: false, items[1].ID: true, "gone": false} {
-		if _, err := os.Stat(reviewDir(q.Root, id)); (err == nil) != keep {
+		if _, err := os.Stat(filepath.Join(q.Root, "review", id+"-1")); (err == nil) != keep {
 			t.Errorf("%s: kept %v, want %v", id, err == nil, keep)
 		}
 	}
@@ -420,7 +423,7 @@ func TestReviewCopyKeepsWhitespaceSettings(t *testing.T) {
 	m = built(amModel(t, m, repo, patch, 160, 60))
 	ind := mkRepo(t, files, cfg...)
 	gitOut(t, ind, "am", "-q", patch)
-	got := gitOut(t, reviewDir(m.q.Root, m.reviewed.Item.ID), "show", "reviewed:Makefile")
+	got := gitOut(t, m.am.dir, "show", "reviewed:Makefile")
 	if want := gitOut(t, ind, "show", "HEAD:Makefile"); got != want || m.am.err != "" {
 		t.Fatalf("review copy committed %q (%s), git am in the repository %q", got, m.am.err, want)
 	}
@@ -491,7 +494,7 @@ func TestReviewCopyIsBuiltAgainOnO(t *testing.T) {
 		t.Fatal("the build o stopped still arrived")
 	}
 	next, _ := m.Update(cmd())
-	if m = next.(model); !strings.Contains(flatten(m.detail()), "⚠ git clone: ") {
+	if m = next.(model); !strings.Contains(flatten(m.detail()), "⚠ mkdir ") {
 		t.Fatalf("review/ not writable: want the failure drawn:\n%s", ansi.Strip(m.detail()))
 	}
 	os.Chmod(review, 0o700)
@@ -530,5 +533,191 @@ func TestAmItemRunsOnceItsCopyIsDrawn(t *testing.T) {
 	m, _ = press(m, " ")
 	if _, cmd = press(m, " "); cmd == nil {
 		t.Fatal("space space does not run it once its review copy is drawn")
+	}
+}
+
+// vscodeOpens makes newModel find VS Code, opening a directory with open (nil: not installed), for this test.
+func vscodeOpens(t *testing.T, open func(string) error) {
+	old := findVSCode
+	t.Cleanup(func() { findVSCode = old })
+	findVSCode = func(string) func(string) error { return open }
+}
+
+// overlayRow is the settings overlay's Commit review row as drawn.
+func overlayRow(m model) string {
+	m, _ = press(m, "s")
+	return rowWith(strings.Split(ansi.Strip(m.View()), "\n"), "Commit review")
+}
+
+func TestCommitReviewSetting(t *testing.T) {
+	needGit(t)
+	repo, patch := commitsPatch(t)
+	_, m := setup(t)
+	open := func(string) error { return nil }
+	vscodeOpens(t, open)
+	m = built(amModel(t, m, repo, patch, 160, 60))
+	if r := overlayRow(m); !strings.Contains(r, "[ VS Code ] (auto)") || rowWith(drawn(m, 2), openBtn) == "" {
+		t.Fatalf("VS Code installed: auto is not VS Code: %q\n%s", r, strings.Join(drawn(m, 2), "\n"))
+	}
+	vscodeOpens(t, nil)
+	m = built(newModelOn(m))
+	if r := overlayRow(m); !strings.Contains(r, "[ viewer ] (auto)") || rowWith(drawn(m, 2), openBtn) != "" || rowWith(drawn(m, 2), "+START") == "" {
+		t.Fatalf("no VS Code: auto does not draw the commits: %q\n%s", r, strings.Join(drawn(m, 2), "\n"))
+	}
+
+	for _, k := range []string{"s", " ", "esc"} { // diff wrap: auto is not saved
+		m, _ = press(m, k)
+	}
+	vscodeOpens(t, open)
+	if m = newModelOn(m); !strings.Contains(overlayRow(m), "[ VS Code ] (auto)") || m.settings.DiffWrap {
+		t.Fatalf("toggling diff wrap froze auto (%q) or was lost", overlayRow(m))
+	}
+	for _, k := range []string{"s", "j", "j", " ", "esc"} { // Commit review: VS Code, as auto, to the viewer
+		m, _ = press(m, k)
+	}
+	if b, _ := os.ReadFile(settingsPath(m.q.Root)); !strings.Contains(string(b), `"commit_review": "patch"`) {
+		t.Fatalf("the choice is not saved: %s", b)
+	}
+	if m = built(newModelOn(m)); !strings.Contains(overlayRow(m), "[ viewer ]") || strings.Contains(overlayRow(m), "auto") ||
+		rowWith(drawn(m, 2), openBtn) != "" {
+		t.Fatalf("the saved choice does not win over auto: %q", overlayRow(m))
+	}
+	for _, k := range []string{"s", "j", "j", " ", "esc"} { // and back to VS Code, which is what auto picks
+		m, _ = press(m, k)
+	}
+	if b, _ := os.ReadFile(settingsPath(m.q.Root)); !strings.Contains(overlayRow(m), "[ VS Code ] (auto)") ||
+		strings.Contains(string(b), "commit_review") {
+		t.Fatalf("toggled back to what auto picks: %q, saved %s; want auto", overlayRow(m), b)
+	}
+
+	root := t.TempDir()
+	os.WriteFile(settingsPath(root), []byte(`{"diff_wrap": false, "attachment_wrap": true}`), 0o600)
+	if s, err := loadSettings(root); err != nil || s.CommitReview != "" {
+		t.Fatalf("an older settings file: %+v, %v; want auto", s, err)
+	}
+}
+
+// newModelOn is a new viewer on m's queue, at m's size, back on m's item, as after a restart.
+func newModelOn(m model) model {
+	n := newModel(m.q, m.home)
+	n.ii = len(n.session().items) - 1
+	n.open()
+	return resize(n, m.w, m.h)
+}
+
+// TestOpenInVSCode: in VS Code mode an am item draws its summary and a button instead of the commits; v or a click on
+// it opens the review copy, with the change staged against the base it was reviewed on.
+func TestOpenInVSCode(t *testing.T) {
+	needGit(t)
+	var opened []string
+	vscodeOpens(t, func(dir string) error { opened = append(opened, dir); return nil })
+	repo, patch := commitsPatch(t)
+	_, m := setup(t)
+	m = built(amModel(t, m, repo, patch, 160, 60))
+	d := drawn(m, 2)
+	if rowWith(d, "⚠ 2 commits · 2 files changed, +1 −0 · 1 binary file") == "" || rowWith(d, openBtn) == "" ||
+		rowWith(d, "+START") != "" || !strings.Contains(statusLine(m), "v open in VS Code") {
+		t.Fatalf("want the summary and the button, not the commits, and the hint:\n%s", ansi.Strip(m.View()))
+	}
+	dir, base := m.am.dir, m.reviewed.AmBase
+	staged := func(when string) {
+		t.Helper()
+		staged, want := gitOut(t, dir, "diff", "--cached", "--binary", base), gitOut(t, dir, "diff", "--binary", base, "reviewed")
+		if head := strings.TrimSpace(gitOut(t, dir, "rev-parse", "HEAD")); staged != want || want == "" || head != base {
+			t.Fatalf("%s: HEAD %s, staged against the base %s:\n%s\nwant the commits' change:\n%s",
+				when, head, base, staged, want)
+		}
+	}
+	staged("built") // by the build: v opens the copy as it is
+	m, cmd := press(m, "v")
+	if cmd == nil || !strings.Contains(statusLine(m), "preparing review copy…") {
+		t.Fatal("v did not start opening the review copy")
+	}
+	next, _ := m.Update(cmd())
+	if m = next.(model); len(opened) != 1 || opened[0] != dir || !strings.Contains(statusLine(m), "opened in VS Code: "+dir) {
+		t.Fatalf("opened %q, status %q; want %s", opened, statusLine(m), dir)
+	}
+	staged("opened")
+
+	sw, iw, _ := columns(m.w)
+	y := -1
+	for i, l := range strings.Split(ansi.Strip(m.View()), "\n") {
+		if y < 0 && strings.Contains(l, openBtn) {
+			y = i
+		}
+	}
+	if m, cmd = click(m, sw+iw+3, y); cmd == nil {
+		t.Fatal("clicking the button did nothing")
+	}
+	if cmd(); len(opened) != 2 {
+		t.Fatalf("the click opened %q", opened)
+	}
+	if m, cmd = click(m, sw+iw+3, y+1); cmd != nil {
+		t.Fatal("the row under the button opens VS Code")
+	}
+
+	vscodeOpens(t, nil) // the choice says VS Code, but it isn't installed
+	m = newModelOn(m)
+	m.settings.CommitReview = "vscode"
+	if m, cmd = press(built(m), "v"); cmd != nil || !strings.Contains(statusLine(m), "VS Code not found") {
+		t.Fatalf("v without VS Code: %q", statusLine(m))
+	}
+}
+
+// TestReviewCopyMovesWithItsContent: VS Code trusts a folder by its path, so once the agent rewrites a patch whose review
+// copy was opened, the copy is built again in another folder, and the old one goes. So is a copy a new viewer builds
+// again for the same patch and HEAD, whose objects the agent may have rewritten since.
+func TestReviewCopyMovesWithItsContent(t *testing.T) {
+	needGit(t)
+	var opened []string
+	vscodeOpens(t, func(dir string) error { opened = append(opened, dir); return nil })
+	repo, patch := commitsPatch(t)
+	_, m := setup(t)
+	m = built(amModel(t, m, repo, patch, 160, 60))
+	if _, cmd := press(m, "v"); cmd == nil || cmd() == nil || len(opened) != 1 {
+		t.Fatalf("not opened: %q", opened)
+	}
+	b, _ := os.ReadFile(fixture(t, "rv-patchsec__plain"))
+	os.WriteFile(filepath.Join(m.q.Root, "queue", m.reviewed.Item.ID, "files", "commits.patch"), b, 0o600)
+	m, cmd := press(m, "o")
+	next, _ := m.Update(cmd())
+	m = next.(model)
+	dir := m.am.dir
+	_, errOld := os.Stat(opened[0])
+	if _, err := os.Stat(dir); dir == opened[0] || err != nil || errOld == nil {
+		t.Fatalf("rebuilt in %s (%v), opened %s (still there: %v)", dir, err, opened[0], errOld == nil)
+	}
+	reviews.Lock()
+	delete(reviews.built, m.reviewed.Item.ID) // a new viewer has built nothing
+	reviews.Unlock()
+	n := built(newModelOn(m))
+	_, errOld = os.Stat(dir)
+	if _, err := os.Stat(n.am.dir); n.am.key != m.am.key || n.am.dir == dir || err != nil || errOld == nil {
+		t.Fatalf("restarted: rebuilt in %s (%v), built before in %s (still there: %v)", n.am.dir, err, dir, errOld == nil)
+	}
+}
+
+// TestOpenerHoldsUpNoBuild: VS Code's opener may be slow to return; meanwhile other items' review copies are built.
+func TestOpenerHoldsUpNoBuild(t *testing.T) {
+	needGit(t)
+	entered, release := make(chan bool), make(chan struct{})
+	defer close(release)
+	vscodeOpens(t, func(string) error { entered <- true; <-release; return nil })
+	repo, patch := commitsPatch(t)
+	_, m := setup(t)
+	m = built(amModel(t, m, repo, patch, 160, 60))
+	_, cmd := press(m, "v")
+	go cmd()
+	<-entered
+	other := amModel(t, m, mkRepo(t, map[string]string{"f": "hello\n"}), fixture(t, "rv-patchsec__plain"), 160, 60)
+	done := make(chan tea.Msg)
+	go func() { done <- other.build(context.Background())() }()
+	select {
+	case v := <-done:
+		if v.(*amView).err != "" {
+			t.Fatalf("other item: %s", v.(*amView).err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("another item's review copy waits for the opener")
 	}
 }

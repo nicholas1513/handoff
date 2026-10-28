@@ -202,7 +202,7 @@ func richWorld(t *testing.T) model {
 var (
 	viewWidths  = []int{120, 100, 80, 60, 200, 40}
 	viewHeights = []int{40, 24, 60, 14, 10}
-	opKeys      = []string{"j", "k", "tab", "shift+tab", "[", "]", "{", "}", "+", "<", ">", "s", "esc", "o", "x"}
+	opKeys      = []string{"j", "k", "tab", "shift+tab", "[", "]", "{", "}", "+", "<", ">", "s", "esc", "o", "x", "v"}
 	wheels      = []tea.MouseButton{tea.MouseButtonWheelDown, tea.MouseButtonWheelDown, tea.MouseButtonWheelUp,
 		tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft, tea.MouseButtonWheelRight}
 )
@@ -327,7 +327,8 @@ func TestCachedViewMatchesFresh(t *testing.T) {
 		{3, "rich", []string{"s", "j", " ", "esc"}}, // attachment wrap off: the attachments pan
 		{4, "edit", []string{"s", " ", "esc"}},      // diff wrap off: the diff pans
 		{5, "am", nil},
-		{6, "am", []string{"s", " ", "esc"}}, // diff wrap off: the commits pan
+		{6, "am", []string{"s", " ", "esc"}},            // diff wrap off: the commits pan
+		{11, "am", []string{"s", "j", "j", " ", "esc"}}, // commit review in VS Code
 	} {
 		seed := c.seed
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
