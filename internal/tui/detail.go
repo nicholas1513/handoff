@@ -328,7 +328,7 @@ func (m model) detailLayout() *detailLayout {
 	if m.openErr != nil {
 		k.openErr = m.openErr.Error()
 	}
-	if d := m.rc.lay; d != nil && d.key == k && maps.Equal(d.diffExp, m.diffExp) && maps.Equal(d.boxX, m.boxX) {
+	if d := m.rc.lay; d != nil && d.key == k && same(d.diffExp, m.diffExp) && same(d.boxX, m.boxX) {
 		return d
 	}
 	_, _, dw := columns(m.w)
@@ -350,6 +350,12 @@ func (m model) detailLayout() *detailLayout {
 	}
 	m.rc.lay = d
 	return d
+}
+
+// same is a == b for the copy-on-write maps: the same map (never written in place), else equal contents. A fully
+// expanded diff has thousands of gaps, too many to compare on every lookup.
+func same[M ~map[K]V, K, V comparable](a, b M) bool {
+	return reflect.ValueOf(a).UnsafePointer() == reflect.ValueOf(b).UnsafePointer() || maps.Equal(a, b)
 }
 
 // atTop is b scrolled to m.boxTop[b.id], clamped to its lines.
