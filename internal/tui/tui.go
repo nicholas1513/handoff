@@ -597,6 +597,9 @@ func (m *model) startRun() tea.Cmd {
 	}
 	m.confirm, m.armed, m.running, m.status, m.seq = false, false, true, "running…", m.seq+1
 	q, r := m.q, *m.reviewed
+	if v := m.shownAm(); v != nil {
+		r.AmCommits, r.AmChecked = v.made, true
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.runningID, m.cancelRun = r.Item.ID, cancel
 	return func() tea.Msg {

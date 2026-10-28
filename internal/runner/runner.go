@@ -4,12 +4,17 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -59,6 +64,13 @@ func Run(ctx context.Context, q *queue.Queue, r queue.Reviewed, now time.Time) (
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = r.Item.Cwd
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	repo, _, am := queue.Am(r.Item)
+	if am { // as the review copy runs it: with no replace refs (it reads the objects the review copy read), and with no
+		// hooks, fsmonitor, signing program or lazy fetch (a promisor remote's upload-pack) the repository names
+		cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1", "GIT_NO_LAZY_FETCH=1", "GIT_CONFIG_COUNT=3",
+			"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null", "GIT_CONFIG_KEY_1=core.fsmonitor",
+			"GIT_CONFIG_VALUE_1=false", "GIT_CONFIG_KEY_2=commit.gpgSign", "GIT_CONFIG_VALUE_2=false")
+	}
 	// Own process group, so canceling also stops what the command started (e.g. ssh under a script).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
@@ -81,7 +93,69 @@ func Run(ctx context.Context, q *queue.Queue, r queue.Reviewed, now time.Time) (
 		res.State, res.ExitCode = queue.Failed, -1
 		res.Stderr += err.Error()
 	}
+	// Checked even when git am failed or stopped in the review copy, which then drew its error and the raw patch. A run
+	// that stops may make only the first of the reviewed commits; any other commit was never drawn.
+	if am && r.AmChecked {
+		got, _ := gitObjects(repo, "", AmLog(r.AmBase, "HEAD")...)
+		differ := got != r.AmCommits && (res.State == queue.Succeeded || !strings.HasPrefix(r.AmCommits, got))
+		if differ || !amIntact(repo, r.AmBase) {
+			if res.State == queue.Succeeded {
+				res.State, res.ExitCode = queue.Failed, -1
+			}
+			res.Stderr += "\nhandoff: these commits differ from the review copy's (an object or setting in the repository" +
+				" changed since review): check them before you use them"
+		}
+	}
 	return res, q.WriteResult(r.Item, res)
+}
+
+// AmLog is git log's arguments for the commits after base up to head, as the run compares the repository's with the
+// review copy's: each one's tree, author, date and message, in formats no setting changes, so a message or author a
+// setting changed since review shows. A file rewritten in .git/objects is read without a hash check, so only the trees
+// git am made show it.
+func AmLog(base, head string) []string {
+	return []string{"log", "--no-show-signature", "--reverse", "--format=%T %aI %an <%ae>%x00%B%x00", base + ".." + head}
+}
+
+// amIntact reports whether every object that repo's commits after base added holds what its id names. git am doesn't
+// write an object the repository already has, so one planted after review at the id of a blob or tree the patch makes
+// would be committed as it is, with the trees the review copy made.
+func amIntact(repo, base string) bool {
+	ids, err := gitObjects(repo, "", "rev-list", "--objects", "--no-object-names", base+"..HEAD")
+	if err != nil {
+		return false
+	}
+	out, err := gitObjects(repo, ids, "cat-file", "--batch") // "<id> <type> <size>\n<content>\n" each
+	for err == nil && out != "" {
+		hdr, rest, _ := strings.Cut(out, "\n")
+		f := strings.Fields(hdr)
+		n := -1
+		if len(f) == 3 {
+			n, _ = strconv.Atoi(f[2])
+		}
+		if n < 0 || len(rest) <= n {
+			return false // "<id> missing", or cut short
+		}
+		h := sha1.New()
+		if len(f[0]) == 2*sha256.Size {
+			h = sha256.New()
+		}
+		fmt.Fprintf(h, "%s %d\x00%s", f[1], n, rest[:n])
+		if hex.EncodeToString(h.Sum(nil)) != f[0] {
+			return false
+		}
+		out = rest[n+1:]
+	}
+	return err == nil
+}
+
+// gitObjects runs git in repo with stdin on its input, reading objects as the review copy does: with no replace refs,
+// and with no lazy fetch, which would run a promisor remote's upload-pack.
+func gitObjects(repo, stdin string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"--no-lazy-fetch", "--no-replace-objects", "-C", repo}, args...)...)
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.Output()
+	return string(out), err
 }
 
 // CancelStale ends an item left "running" by a viewer that went away (quit or crashed mid-run). It

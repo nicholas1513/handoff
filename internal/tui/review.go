@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/nicholas1513/handoff/internal/queue"
+	"github.com/nicholas1513/handoff/internal/runner"
 )
 
 // An am item (git [-C <repo>] am {file:<name>}, see queue.Am) hands over commits as a patch. Rather than parse the
@@ -41,6 +42,7 @@ type amView struct {
 	sum        string  // "N commits · F files changed, +A −B"
 	bin        int     // binary files, whose contents the log doesn't show
 	rows       []dline // the log, coloured
+	made       string  // the commits as runner.AmLog reads them (queue.Reviewed.AmCommits)
 	err        string  // why the build failed: git's own error, which the run would hit too
 }
 
@@ -276,6 +278,7 @@ func (v *amView) build(ctx context.Context, dir, patch string) error {
 	// a submodule's ignore setting or the user's diff.ignoreSubmodules would hide a gitlink change, and their
 	// diff.submodule would draw it as a log instead of a diff
 	num := run(dir, "diff", "--numstat", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", v.base, "reviewed")
+	v.made = run(dir, runner.AmLog(v.base, "reviewed")...)
 	log := run(dir, "log", "--reverse", "-p", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none",
 		"--submodule=short", "--format=commit %H%nAuthor: %an <%ae>%nDate:   %ad%n%n%w(0,4,4)%B", v.base+"..reviewed")
 	if err != nil {

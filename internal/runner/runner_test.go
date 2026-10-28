@@ -337,6 +337,26 @@ func TestAmRefusedWhenHeadMoved(t *testing.T) {
 	}
 }
 
+// TestAmPinsHeadWithoutReplaceRefs: the run reads the repository with no replace refs, so the pin does too. A replace ref
+// that turns HEAD into a tag of another commit would otherwise pin, and review, that commit while git am applies on HEAD.
+func TestAmPinsHeadWithoutReplaceRefs(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	patch := amPatch(t, repo)
+	head := strings.TrimSpace(gitT(t, "-C", repo, "rev-parse", "HEAD"))
+	other := strings.TrimSpace(gitT(t, "-C", repo, "commit-tree", "-m", "other", "HEAD^{tree}"))
+	gitT(t, "-C", repo, "tag", "-a", "-m", "t", "t", other)
+	gitT(t, "-C", repo, "replace", "-f", head, strings.TrimSpace(gitT(t, "-C", repo, "rev-parse", "t")))
+	q := &queue.Queue{Root: t.TempDir()}
+	it, err := q.Add(queue.Item{Argv: []string{"git", "-C", repo, "am", "{file:c.patch}"}, Cwd: t.TempDir(), SessionID: sid},
+		map[string]string{"c.patch": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := q.Snapshot(it.ID); err != nil || r.AmBase != head {
+		t.Fatalf("AmBase = %q, %v; want HEAD %s, not %s", r.AmBase, err, head, other)
+	}
+}
+
 // amPatch is a format-patch of one commit changing f from "a\n", and clones at each of paths of the repository it
 // applies to.
 func amPatch(t *testing.T, paths ...string) string {
@@ -353,6 +373,40 @@ func amPatch(t *testing.T, paths ...string) string {
 	patch := filepath.Join(t.TempDir(), "c.patch")
 	os.WriteFile(patch, []byte(gitT(t, "-C", src, "format-patch", "--stdout", "HEAD~1")), 0o600)
 	return patch
+}
+
+// TestAmRunsNoHooks: the run's git am runs as the review copy's does, with none of the hooks, fsmonitor or signing
+// program the repository names: none of them was reviewed, and an agent can plant them in a repository it made.
+func TestAmRunsNoHooks(t *testing.T) {
+	repo, marks := filepath.Join(t.TempDir(), "repo"), t.TempDir()
+	patch := amPatch(t, repo)
+	mark := func(name string) string {
+		p := filepath.Join(repo, ".git", "hooks", name)
+		os.WriteFile(p, []byte("#!/bin/sh\ntouch '"+filepath.Join(marks, name)+"'\n"), 0o700)
+		return p
+	}
+	for _, h := range []string{"applypatch-msg", "pre-applypatch", "post-applypatch", "post-rewrite", "reference-transaction"} {
+		mark(h)
+	}
+	gitT(t, "-C", repo, "config", "core.fsmonitor", mark("fsmonitor"))
+	gitT(t, "-C", repo, "config", "commit.gpgSign", "true")
+	gitT(t, "-C", repo, "config", "gpg.program", mark("gpg"))
+	q := &queue.Queue{Root: t.TempDir()}
+	it, err := q.Add(queue.Item{Argv: []string{"git", "-C", repo, "am", "{file:c.patch}"}, Cwd: t.TempDir(), SessionID: sid},
+		map[string]string{"c.patch": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := q.Snapshot(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := Run(context.Background(), q, r, time.Now()); err != nil || res.State != queue.Succeeded {
+		t.Errorf("run = %+v, %v", res, err)
+	}
+	if ents, _ := os.ReadDir(marks); len(ents) > 0 {
+		t.Errorf("%s ran", ents[0].Name())
+	}
 }
 
 // TestAmRefusedInAnotherRepository: a repository put at the item's -C path after review (a symlink repointed, or a
