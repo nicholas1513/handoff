@@ -312,6 +312,39 @@ func TestLoadBeforeARejectIsReadAgain(t *testing.T) {
 	}
 }
 
+// TestLoadBeforeARecheckIsReadAgain: a click in the items pane re-checks the open item. A tick's load that read the
+// item before it changed on disk would take the drawn warning back off the screen and let space space use the item up,
+// so it is dropped and the queue read again.
+func TestLoadBeforeARecheckIsReadAgain(t *testing.T) {
+	for what, y := range map[string]int{"the open item's row": listTop + 2, "blank space": listTop + 20} {
+		q, m := setup(t)
+		sw, _, _ := columns(m.w)
+		it := *m.item()
+		next, cmd := m.Update(tickMsg(time.Now()))
+		l := cmd() // reads the item before it changes
+		p := filepath.Join(q.Root, "queue", it.ID, "item.json")
+		b, err := os.ReadFile(p)
+		if err == nil {
+			err = os.WriteFile(p, append(b, '\n'), 0o600)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, _ = click(next.(model), sw+3, y)
+		if v := ansi.Strip(m.View()); m.item().ID != it.ID || !strings.Contains(v, "Changed on disk") {
+			t.Fatalf("a click on %s did not re-check the open item:\n%s", what, v)
+		}
+		next, _ = m.Update(l)
+		if v := ansi.Strip(next.View()); !strings.Contains(v, "Changed on disk") {
+			t.Errorf("click on %s: a load read before the change took the warning off the screen:\n%s", what, v)
+		}
+		m, _ = press(next.(model), " ")
+		if _, cmd := press(m, " "); cmd != nil {
+			t.Errorf("click on %s: space space ran an item drawn as changed on disk", what)
+		}
+	}
+}
+
 // TestApplyingALoadReadsNoFiles: the tick reads the disk in its load, off the event loop; applying the load reads
 // nothing, so it shows what was read even with the queue gone.
 func TestApplyingALoadReadsNoFiles(t *testing.T) {
