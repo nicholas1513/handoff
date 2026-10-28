@@ -52,6 +52,10 @@ const (
 // advanceGuard: after an auto-advance, space/r are ignored so a burst of taps can't run the new item unseen.
 const advanceGuard = time.Second
 
+// wheelBurst: a terminal sends one wheel click as several events in one write (Ghostty: 3, under 0.5 ms apart;
+// separate writes arrive 4.5 ms or more apart), so a list moves one item per burst, not one per event.
+const wheelBurst = 2 * time.Millisecond
+
 func columns(w int) (sessions, items, detail int) {
 	sessions, items = max(22, w/5), max(28, w*3/10)
 	return sessions, items, max(20, w-sessions-items)
@@ -113,6 +117,9 @@ type model struct {
 
 	now        func() time.Time
 	advancedAt time.Time
+	wheelAt    time.Time // the last wheel event, and its pane and direction, for wheelBurst
+	wheelPane  int
+	wheelD     int
 }
 
 // gens numbers row snapshots, unique across copies of the model so a shared cache can't mistake one for another.
@@ -862,10 +869,13 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if msg.Button == tea.MouseButtonWheelUp {
 			d = -1
 		}
+		now := m.now()
+		burst := now.Sub(m.wheelAt) < wheelBurst && pane == m.wheelPane && d == m.wheelD
+		m.wheelAt, m.wheelPane, m.wheelD = now, pane, d
 		if id, _, ok := m.boxAt(msg.Y); pane == 2 && ok {
-			m.scrollBox(id, 3*d)
+			m.scrollBox(id, d) // a line per event: a click scrolls as far as the terminal's own scrollback
 			m.boxSel = id
-		} else {
+		} else if pane == 2 || !burst {
 			m.move(d)
 		}
 	case msg.Button == tea.MouseButtonWheelLeft || msg.Button == tea.MouseButtonWheelRight:

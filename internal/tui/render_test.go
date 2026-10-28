@@ -381,8 +381,8 @@ func TestDrawingReadsNoFiles(t *testing.T) {
 	}
 	sw, iw, _ := columns(m.w)
 	m = mouseAt(m, sw+iw+5, y, tea.MouseButtonWheelDown)
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "lines 4–19 of 201") {
-		t.Errorf("wheel over the result box with the files removed did not scroll it to lines 4–19 of 201 "+
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "lines 2–17 of 201") {
+		t.Errorf("wheel over the result box with the files removed did not scroll it to lines 2–17 of 201 "+
 			"(hit-testing or scrolling re-read the result from disk):\n%s", v)
 	}
 }
@@ -677,7 +677,7 @@ func TestBoxSelectionAndScrollShowAtOnce(t *testing.T) {
 			y = i
 		}
 	}
-	step("the wheel over the prompt box", func(m model) model { return mouseAt(m, sw+iw+5, y, tea.MouseButtonWheelDown) }, "lines 16–27 of 100")
+	step("the wheel over the prompt box", func(m model) model { return mouseAt(m, sw+iw+5, y, tea.MouseButtonWheelDown) }, "lines 14–25 of 100")
 	step("the wheel back up", func(m model) model { return mouseAt(m, sw+iw+5, y, tea.MouseButtonWheelUp) }, "lines 13–24 of 100")
 }
 
