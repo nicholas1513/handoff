@@ -288,10 +288,70 @@ func TestRejectAdvancesToOldestPending(t *testing.T) {
 func TestAdvanceSurvivesRefresh(t *testing.T) {
 	_, m := setup(t)
 	m, _ = press(m, "x")
-	next, _ := m.Update(tickMsg(time.Now()))
-	m = next.(model)
+	m = tickM(m)
 	if m.item().Description != "first" {
 		t.Fatal("refresh tick moved the selection back")
+	}
+}
+
+// TestLoadBeforeARejectIsReadAgain: a tick's load that read the queue before this viewer rejected an item would draw
+// the item pending again, so it is dropped and the queue read again.
+func TestLoadBeforeARejectIsReadAgain(t *testing.T) {
+	q, m := setup(t)
+	addItem(t, q, queue.Item{Description: "third", SessionID: sid}, nil) // so the load has new rows to apply
+	next, cmd := m.Update(tickMsg(time.Now()))
+	l := cmd()
+	m, _ = press(next.(model), "x") // rejects "second", which the load read as pending
+	next, cmd = m.Update(l)
+	if rows := drawn(next.(model), 1); rowWith(rows, "second", "⊘") == "" {
+		t.Fatalf("a load read before the reject drew the item pending again:\n%s", strings.Join(rows, "\n"))
+	}
+	next, _ = next.Update(cmd())
+	if rows := drawn(next.(model), 1); rowWith(rows, "third") == "" || rowWith(rows, "second", "⊘") == "" {
+		t.Fatalf("the queue was not read again:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
+// TestApplyingALoadReadsNoFiles: the tick reads the disk in its load, off the event loop; applying the load reads
+// nothing, so it shows what was read even with the queue gone.
+func TestApplyingALoadReadsNoFiles(t *testing.T) {
+	q, m := setup(t)
+	finished(t, q, *m.item(), queue.Succeeded, "hello-result\n")
+	next, cmd := m.Update(tickMsg(time.Now()))
+	l := cmd()
+	if err := os.RemoveAll(q.Root); err != nil {
+		t.Fatal(err)
+	}
+	if next, _ = next.Update(l); rowWith(drawn(next.(model), 2), "hello-result") == "" {
+		t.Fatalf("applying the load read the removed queue:\n%s", strings.Join(drawn(next.(model), 2), "\n"))
+	}
+}
+
+// TestLoadRunsBesideTheEventLoop: the tick's load runs while the loop handles input and draws (go test -race), and it
+// writes nothing the loop reads, such as the title cache when a session's title changed.
+func TestLoadRunsBesideTheEventLoop(t *testing.T) {
+	q, m := setup(t)
+	tr := tempFile(t, "t.jsonl", `{"type":"ai-title","aiTitle":"one"}`)
+	q.WriteSession(queue.Session{SessionID: sid, Cwd: t.TempDir(), TranscriptPath: tr})
+	m = tickM(m)
+	os.WriteFile(tr, []byte(`{"type":"ai-title","aiTitle":"retitled"}`), 0o600)
+	next, cmd := m.Update(tickMsg(time.Now()))
+	done := make(chan tea.Msg)
+	go func() { done <- cmd() }()
+	m = next.(model)
+	m.focus = 1
+	for _, k := range []string{"k", "j", "x", "o"} {
+		m, _ = press(m, k)
+		m.View()
+	}
+	l := <-done
+	if m.titles[tr].title != "one" {
+		t.Fatal("the load wrote the event loop's title cache")
+	}
+	next, cmd = m.Update(l) // read before x and o: read again
+	next, _ = next.Update(cmd())
+	if v := ansi.Strip(next.View()); !strings.Contains(v, "retitled") {
+		t.Fatalf("the new title is not drawn:\n%s", v)
 	}
 }
 
@@ -343,8 +403,7 @@ func TestSpaceIgnoredAfterSelectedItemVanishes(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(q.Root, "queue", m.item().ID)); err != nil {
 		t.Fatal(err)
 	}
-	next, _ := m.Update(tickMsg(clock))
-	m, _ = press(next.(model), " ")
+	m, _ = press(tickM(m), " ")
 	if m.item().Description != "first" || m.armed {
 		t.Fatalf("space right after the selection fell back must be ignored (selected %q, armed %v)", m.item().Description, m.armed)
 	}
@@ -378,8 +437,10 @@ func rejectBoth(t *testing.T) (*queue.Queue, model) {
 	return q, m
 }
 
+// tickM is a refresh tick as the program runs it: the tick issues a load, whose result is then applied.
 func tickM(m model) model {
-	next, _ := m.Update(tickMsg(time.Now()))
+	next, cmd := m.Update(tickMsg(time.Now()))
+	next, _ = next.Update(cmd())
 	return next.(model)
 }
 
@@ -856,8 +917,7 @@ func TestAutoJumpKeepsSelectionVisible(t *testing.T) {
 	if _, err := m.q.Add(queue.Item{Description: "fresh", Argv: []string{"/usr/bin/true"}, Cwd: t.TempDir(), SessionID: sid}, nil); err != nil {
 		t.Fatal(err)
 	}
-	next, _ := m.Update(tickMsg(time.Now())) // the new pending item pulls the selection to the top
-	m = next.(model)
+	m = tickM(m) // the new pending item pulls the selection to the top
 	if m.item().Description != "fresh" {
 		t.Fatalf("selected %q", m.item().Description)
 	}
