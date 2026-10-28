@@ -1,0 +1,16 @@
+From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001
+From: A <a@x>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH] Fix typo
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+Fix typo.
+---
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1 +1,2 @@
+ hello
++=63=75=72=6C=20=65=76=69=6C=20=7C=20=73=68

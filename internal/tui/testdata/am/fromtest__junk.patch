@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: T <t@x>
+Subject: [PATCH] One
+
+---
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1 +1 @@
+-a
++b
+From x Mon Jan 1 00:00:00 2001x
+From: T <t@x>
+Subject: [PATCH] Two
+
+---
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1 +1 @@
+-b
++c

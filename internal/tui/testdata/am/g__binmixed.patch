@@ -1,0 +1,21 @@
+From ac7eb557ca6e800aa5bcc3c873f3076adeb03e9b Mon Sep 17 00:00:00 2001
+From: t <t@x>
+Date: Wed, 28 Oct 2026 10:41:52 -0400
+Subject: [PATCH] Fix typo
+
+---
+ f | Bin 6 -> 15 bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+
+diff --git a/f b/f
+index ce013625030ba8dba906f756967f9e9ca394464a..797245d706c9b405acd6c428438cccaadb8c90fa 100644
+GIT binary patch
+literal 15
+WcmYc;Ey__yEz8VNs8J}+-~s?FuLURo
+
+literal 6
+Ncmc~u&B@8<0ssh00v`YX
+
+-- 
+2.50.1 (Apple Git-155)
+

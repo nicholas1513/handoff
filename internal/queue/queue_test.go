@@ -359,3 +359,34 @@ func TestEditItem(t *testing.T) {
 		t.Fatalf("new-file snapshot = %+v, %v", r, err)
 	}
 }
+
+func TestAm(t *testing.T) {
+	files := []string{"c.patch"}
+	for _, c := range []struct {
+		argv       []string
+		repo, file string
+	}{
+		{[]string{"git", "-C", "/r", "am", "{file:c.patch}"}, "/r", "c.patch"},
+		{[]string{"git", "am", "{file:c.patch}"}, "/cwd", "c.patch"},
+		{[]string{"git", "-C", "sub/../x", "am", "{file:c.patch}"}, "/cwd/sub/../x", "c.patch"},
+		{[]string{"git", "-C", "", "am", "{file:c.patch}"}, "/cwd/", "c.patch"},
+	} {
+		repo, file, ok := Am(Item{Argv: c.argv, Cwd: "/cwd", Files: files})
+		if !ok || repo != c.repo || file != c.file {
+			t.Errorf("%q: got %q %q %v, want %q %q", c.argv, repo, file, ok, c.repo, c.file)
+		}
+	}
+	for _, argv := range [][]string{
+		{"/usr/bin/git", "am", "{file:c.patch}"}, {"git", "am", "--3way", "{file:c.patch}"}, {"git", "am", "{file:other}"},
+		{"git", "am", "x{file:c.patch}"}, {"git", "-C", "{file:c.patch}", "am", "{file:c.patch}"}, {"git", "apply", "{file:c.patch}"},
+		{"git", "-c", "a=b", "am", "{file:c.patch}"}, {"git", "am"}, {"git", "-C", "/r", "am", "{file:c.patch}", "x"},
+	} {
+		if _, _, ok := Am(Item{Argv: argv, Cwd: "/cwd", Files: files}); ok {
+			t.Errorf("%q is an am item", argv)
+		}
+	}
+	// no cwd: the run starts in the viewer's directory, where a relative -C resolves, not at /
+	if repo, _, ok := Am(Item{Argv: []string{"git", "-C", "x", "am", "{file:c.patch}"}, Files: files}); !ok || repo != "x" {
+		t.Errorf("no cwd: repo %q, %v; want x", repo, ok)
+	}
+}

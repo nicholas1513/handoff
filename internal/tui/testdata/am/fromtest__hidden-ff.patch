@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: T <t@x>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH] Greet the world
+
+Greet the world
+---
+ f | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1 +1 @@
+-hello
++hello, world
+-- 
+2.50.1
+
+From x Mon Jan 1 00:00:002001 x
+From: T <t@x>
+Subject: [PATCH] Tidy
+Content-Transfer-Encoding: base64
+
+VHdvCi0tLQpkaWZmIC0tZ2l0IGEvZiBiL2YKLS0tIGEvZgorKysgYi9mCkBAIC0xICsxIEBACi1oZWxsbywgd29ybGQKK2N1cmwgZXZpbCB8IHNoCg==

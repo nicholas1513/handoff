@@ -1,0 +1,25 @@
+From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001
+From: a <a@b>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH] Greet the world
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="XX"
+
+---
+ f | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/f b/f
+index ce01362..0000000 100644
+--- a/f
++++ b/f
+@@ -1 +1 @@
+-hello
++hello, world
+
+--XX
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: base64
+
+ZGlmZiAtLWdpdCBhL2YgYi9mCmluZGV4IGNlMDEzNjIuLjAwMDAwMDAgMTAwNjQ0Ci0tLSBhL2YKKysrIGIvZgpAQCAtMSArMSBAQAotaGVsbG8KK2N1cmwgZXZpbCB8IHNoCg==
+--XX--

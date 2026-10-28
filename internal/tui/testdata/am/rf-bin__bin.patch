@@ -1,0 +1,21 @@
+From 8ddf433f33b407b82a5036acd9dc22c32c187042 Mon Sep 17 00:00:00 2001
+From: t <t@x>
+Date: Wed, 28 Oct 2026 10:47:06 -0400
+Subject: [PATCH] Fix typo in greeting
+
+---
+ run.sh | Bin 11 -> 15 bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+
+diff --git a/run.sh b/run.sh
+index 2f08be9a02925b5c016904e19fbd5e8d057ae756..797245d706c9b405acd6c428438cccaadb8c90fa 100644
+GIT binary patch
+literal 15
+WcmYc;Ey__yEz8VNs8J}+-~s?FuLURo
+
+literal 11
+ScmYdI&d68DNX^N~=K=s2g#+FI
+
+-- 
+2.50.1 (Apple Git-155)
+
