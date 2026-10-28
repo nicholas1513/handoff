@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -196,13 +197,14 @@ func diffColor(l string) lipgloss.TerminalColor {
 	return lipgloss.NoColor{}
 }
 
-func (m model) detail() string {
+func (m model) detail() string { return m.detailOf(m.layout()) }
+
+func (m model) detailOf(l layout) string {
 	var b strings.Builder
-	segs, sel := m.detailSegs(), m.selBox()
-	for _, s := range segs {
+	for _, s := range l.segs {
 		b.WriteString(s.text)
 		if s.box != nil {
-			b.WriteString(m.render(*s.box, s.box.id == sel))
+			b.WriteString(m.render(*s.box, s.box.id == l.sel))
 		}
 	}
 	return b.String()
@@ -242,42 +244,59 @@ type placed struct {
 	first int
 }
 
-// boxes is the framed boxes in display order, with where each sits in the wrapped detail.
-func (m model) boxes() (out []placed) {
+// layout is one build of the detail: its runs, the framed boxes in display order with where each sits in the
+// wrapped detail, and the selected one. Building it is most of a frame's cost (the wheel can send dozens of
+// events a second), so code that reads the detail more than once takes one layout and reuses it.
+type layout struct {
+	segs  []seg
+	boxes []placed
+	sel   string // m.boxSel while it is framed, else the first framed box, else ""
+}
+
+func (m model) layout() (l layout) {
+	l.segs = m.detailSegs()
 	n := 0
-	for _, s := range m.detailSegs() {
+	for _, s := range l.segs {
 		if s.box == nil {
 			n += strings.Count(m.wrapDetail(strings.TrimSuffix(s.text, "\n")), "\n") + 1
 		} else if s.box.framed {
-			out = append(out, placed{*s.box, n + 1})
+			l.boxes = append(l.boxes, placed{*s.box, n + 1})
 			n += s.box.cap + 2
 		} else {
 			n += max(1, len(s.box.lines))
 		}
 	}
-	return
-}
-
-// selBox is the selected framed box: m.boxSel while it is framed, else the first framed box, else "".
-func (m model) selBox() string {
-	bs := m.boxes()
-	for _, b := range bs {
+	for _, b := range l.boxes {
+		if l.sel == "" || b.id == m.boxSel {
+			l.sel = b.id
+		}
 		if b.id == m.boxSel {
-			return b.id
+			break
 		}
 	}
-	if len(bs) > 0 {
-		return bs[0].id
-	}
-	return ""
+	return l
 }
+
+// box returns the box with that id, if drawn.
+func (l layout) box(id string) (box, bool) {
+	for _, s := range l.segs {
+		if s.box != nil && s.box.id == id {
+			return *s.box, true
+		}
+	}
+	return box{}, false
+}
+
+func (m model) boxes() []placed { return m.layout().boxes }
+
+func (m model) selBox() string { return m.layout().sel }
 
 // nextBox moves the selection d framed boxes along in display order, stopping at either end.
 func (m *model) nextBox(d int) {
-	bs, sel := m.boxes(), m.selBox()
-	for i, b := range bs {
-		if b.id == sel {
-			m.boxSel = bs[max(0, min(i+d, len(bs)-1))].id
+	l := m.layout()
+	for i, b := range l.boxes {
+		if b.id == l.sel {
+			m.boxSel = l.boxes[max(0, min(i+d, len(l.boxes)-1))].id
 		}
 	}
 }
@@ -304,14 +323,7 @@ func with[K comparable, V any](mp map[K]V, k K, v V) map[K]V {
 }
 
 // box returns the box with that id, if drawn.
-func (m model) box(id string) (box, bool) {
-	for _, s := range m.detailSegs() {
-		if s.box != nil && s.box.id == id {
-			return *s.box, true
-		}
-	}
-	return box{}, false
-}
+func (m model) box(id string) (box, bool) { return m.layout().box(id) }
 
 // scrollbar is one glyph per row of a cap-row window over total lines starting at top: a dim track and a thumb sized
 // and placed in proportion, touching the bottom at the last page. total <= cap gives an all-thumb bar.
@@ -381,8 +393,9 @@ func (m *model) scrollBox(id string, d int) {
 // boxAt reports which framed box has screen row y as one of its content rows (body line k is at buttonY+1+k-scroll).
 // Border rows don't count. line is the box line drawn on that row.
 func (m model) boxAt(y int) (id string, line int, ok bool) {
-	top := m.bodyTop(len(m.detailLines()))
-	for _, b := range m.boxes() {
+	l := m.layout()
+	top := m.bodyTop(len(m.linesOf(l)))
+	for _, b := range l.boxes {
 		first := buttonY + 1 + b.first - top
 		if y > buttonY && y >= first && y < first+b.cap && y <= max(5, m.h-3) {
 			return b.id, b.top + y - first, true
@@ -401,8 +414,10 @@ func (m model) wrapDetail(s string) string {
 }
 
 // detailLines is the wrapped detail, one entry per drawn line. View, boxAt and clampScroll share it.
-func (m model) detailLines() []string {
-	return strings.Split(m.wrapDetail(strings.TrimSuffix(m.detail(), "\n")), "\n")
+func (m model) detailLines() []string { return m.linesOf(m.layout()) }
+
+func (m model) linesOf(l layout) []string {
+	return strings.Split(m.wrapDetail(strings.TrimSuffix(m.detailOf(l), "\n")), "\n")
 }
 
 // bodyRows is how many detail lines the pane draws: pane() keeps h lines, less the title and the button row.
@@ -415,23 +430,68 @@ func (m *model) clampScroll() {
 
 // wrapText wraps txt to a box width, tabs as four spaces.
 func wrapText(txt string) func(int) []string {
-	return func(w int) []string {
-		return strings.Split(strings.TrimSuffix(ansi.Wrap(strings.ReplaceAll(txt, "\t", "    "), w, ""), "\n"), "\n")
+	return func(w int) []string { return wrapLines(strings.ReplaceAll(txt, "\t", "    "), w) }
+}
+
+// memo caches pure work by key. Each wheel tick rebuilds the detail several times, and re-wrapping a long box
+// or re-reading an attachment on every rebuild made fast scrolling fall seconds behind. Callers must not
+// modify what it returns.
+type memo[K comparable, V any] struct {
+	sync.Mutex
+	m map[K]V
+}
+
+func (c *memo[K, V]) get(k K, f func() V) V {
+	c.Lock()
+	defer c.Unlock()
+	if v, ok := c.m[k]; ok {
+		return v
 	}
+	if len(c.m) >= 8192 || c.m == nil { // shortcut: drops everything when full, fine while one item is on screen
+		c.m = map[K]V{}
+	}
+	v := f()
+	c.m[k] = v
+	return v
+}
+
+type wrapKey struct {
+	s string
+	w int
+}
+
+var (
+	wraps    memo[wrapKey, []string]
+	attTexts memo[string, string]
+)
+
+// wrapLines is s wrapped to w cells, one entry per line.
+func wrapLines(s string, w int) []string {
+	return wraps.get(wrapKey{s, w}, func() []string {
+		return strings.Split(strings.TrimSuffix(ansi.Wrap(s, w, ""), "\n"), "\n")
+	})
+}
+
+// attText is an attachment's snapshot copy as shown: JSON pretty-printed, sanitized. Snapshots never change,
+// so the path is the key.
+func attText(path string) string {
+	return attTexts.get(path, func() string {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return sanitize(err.Error())
+		}
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, data, "", "  ") == nil {
+			data = pretty.Bytes()
+		}
+		return sanitize(string(data))
+	})
 }
 
 // attBox is an attachment's box: the snapshot copy, JSON pretty-printed, sanitized. With attachment wrap off it is
 // always framed, so it can be selected and panned, and its lines are cut at the pan offset (see cutLines).
 func (m model) attBox(name string) box {
-	data, err := os.ReadFile(filepath.Join(m.reviewed.SnapDir, name))
-	if err != nil {
-		data = []byte(err.Error())
-	}
-	var pretty bytes.Buffer
-	if json.Indent(&pretty, data, "", "  ") == nil {
-		data = pretty.Bytes()
-	}
-	id, txt := "file:"+name, sanitize(string(data))
+	id, txt := "file:"+name, attText(filepath.Join(m.reviewed.SnapDir, name))
 	if m.settings.AttachmentWrap {
 		return m.mkBox(id, wrapText(txt), m.capPct(30))
 	}
