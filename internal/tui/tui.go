@@ -102,6 +102,8 @@ type model struct {
 	quitArmed     bool // keyboard: q pressed while runs are in flight, waiting for the second
 	cancelArmed   bool // keyboard: one c pressed on a running item, waiting for the second
 	cancelConfirm bool // mouse: Cancel run clicked, waiting for Yes
+	restoreArmed  string // keyboard: one ctrl+l pressed, waiting for the second; what it would restore
+	saved         string // the last save of the running sessions, for the Sessions pane title
 	scroll   int
 	itemTop  int            // first items-pane row drawn
 	boxTop   map[string]int // first line drawn per box id ("result", "prompt", "file:<name>"); copied on write
@@ -204,6 +206,7 @@ type loaded struct {
 	rev     *queue.Reviewed
 	changed bool
 	data    *detailData // nil: rev is no longer listed
+	saved   string      // see model.saved; read each load, since a /handoff:claude-sessions save can change it
 }
 
 // load returns the read of the queue for refresh. It touches no model field and shares nothing the event loop
@@ -214,7 +217,7 @@ func (m *model) load() func() loaded {
 	l := loaded{seq: m.seq, titles: maps.Clone(m.titles), rev: m.reviewed}
 	return func() loaded {
 		items, invalid, err := q.List()
-		l.err = err
+		l.err, l.saved = err, savedLabel(q.Root, now)
 		byID := map[string]*sessionRow{}
 		var rows []*sessionRow
 		for i := len(items) - 1; i >= 0; i-- { // newest first
@@ -281,7 +284,7 @@ func (m *model) apply(l loaded) {
 	if l.err != nil {
 		m.status = l.err.Error()
 	}
-	m.titles = l.titles
+	m.titles, m.saved = l.titles, l.saved
 	if !l.same {
 		m.rows, m.rowsGen = l.rows, nextGen()
 	}
@@ -837,6 +840,13 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		} // any other key only disarms and is not acted on
 		return m, nil
 	}
+	if m.restoreArmed != "" {
+		m.restoreArmed = ""
+		if k == "ctrl+l" {
+			return m, restoreCmd(m.q)
+		} // any other key only disarms and is not acted on
+		return m, nil
+	}
 	if m.cancelConfirm { // mouse confirm: any key keeps the run
 		m.cancelConfirm = false
 		return m, nil
@@ -896,6 +906,10 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		m.open()
 	case "s":
 		m.menu = true
+	case "ctrl+s":
+		return m, saveCmd(m.q, m.now())
+	case "ctrl+l":
+		m.armRestore()
 	case "v":
 		if m.layout().open >= 0 {
 			return m, m.openCmd()
@@ -966,6 +980,9 @@ func (m model) footer() (string, int) {
 	if n := len(m.runs); m.quitArmed {
 		msg = fmt.Sprintf("%d run%s in progress: q again to quit", n, map[bool]string{true: "s"}[n > 1])
 	}
+	if m.restoreArmed != "" {
+		msg = "restore " + m.restoreArmed + ": ctrl+l again"
+	}
 	f := m.rc.foot.get(styleKey{plain, msg, lookNow()}, func() footLine {
 		status, x := dim.Render(plain), ansi.StringWidth(plain[:strings.Index(plain, settingsKey)])
 		if msg != "" {
@@ -1009,8 +1026,8 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if (m.armed || m.cancelArmed || m.quitArmed) && press {
-		m.armed, m.cancelArmed, m.quitArmed = false, false, false // a click only cancels the arm; it is not acted on
+	if (m.armed || m.cancelArmed || m.quitArmed || m.restoreArmed != "") && press {
+		m.armed, m.cancelArmed, m.quitArmed, m.restoreArmed = false, false, false, "" // a click only cancels the arm; it is not acted on
 		return m, nil
 	}
 	switch {
@@ -1195,13 +1212,14 @@ type sessKey struct {
 	gen, si, w, h int
 	on            bool
 	look          look
+	saved         string
 }
 
 // sessionsPane is the sessions pane's lines, built again when the rows, selection, size, focus or styling change or
 // a label's age would read differently.
 func (m model) sessionsPane(w, h int) []string {
 	now, c := time.Now(), &m.pc.sess
-	k := sessKey{m.rowsGen, m.si, w, h, m.focus == 0, lookNow()}
+	k := sessKey{m.rowsGen, m.si, w, h, m.focus == 0, lookNow(), m.saved}
 	if c.lines != nil && c.key == k && !now.Before(c.from) && now.Before(c.until) {
 		return c.lines
 	}
@@ -1225,7 +1243,11 @@ func (m model) sessionsPane(w, h int) []string {
 			}
 		}
 	}
-	c.lines = paneLines("Sessions", w, h, m.focus == 0, rows, m.si)
+	title := "Sessions"
+	if m.saved != "" {
+		title += " · " + m.saved
+	}
+	c.lines = paneLines(ansi.Truncate(title, w-2, "…"), w, h, m.focus == 0, rows, m.si)
 	return c.lines
 }
 

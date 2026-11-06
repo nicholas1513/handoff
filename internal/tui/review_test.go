@@ -17,13 +17,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/nicholas1513/handoff/internal/claudesessions"
 	"github.com/nicholas1513/handoff/internal/queue"
 )
 
 // TestMain keeps the user's git config out of the tests (their hooks, signing and identity) and VS Code: tests that
-// open it inject an opener.
+// open it inject an opener. Restoring sessions would open Ghostty windows, so tests that need it inject that too.
 func TestMain(m *testing.M) {
 	findVSCode = func(string) func(string) error { return nil }
+	restoreSessions = func(claudesessions.Plan) (string, error) { panic("a test restored real sessions") }
 	for k, v := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"} {
 		os.Setenv(k, v)
