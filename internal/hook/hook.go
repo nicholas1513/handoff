@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nicholas1513/handoff/internal/claudesessions"
 	"github.com/nicholas1513/handoff/internal/queue"
 )
 
@@ -39,8 +40,10 @@ func SessionStart(q *queue.Queue, r io.Reader, envFile string) error {
 	if err := os.MkdirAll(filepath.Join(q.Root, "queue"), 0o700); err != nil {
 		return err
 	}
+	s := queue.Session{SessionID: in.SessionID, Cwd: in.Cwd, TranscriptPath: in.TranscriptPath, Source: in.Source, Started: time.Now()}
+	s.ClaudePID, s.ClaudeStart, _ = claudesessions.Owner(os.Getppid()) // none when Claude has no terminal: nothing to restore
 	// WriteSession validates the id, which also keeps it safe to put in the shell env file.
-	if err := q.WriteSession(queue.Session{SessionID: in.SessionID, Cwd: in.Cwd, TranscriptPath: in.TranscriptPath, Source: in.Source, Started: time.Now()}); err != nil {
+	if err := q.WriteSession(s); err != nil {
 		return err
 	}
 	if envFile == "" { // optional: add also reads CLAUDE_CODE_SESSION_ID

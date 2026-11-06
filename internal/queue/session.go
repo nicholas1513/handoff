@@ -22,6 +22,9 @@ type Session struct {
 	TranscriptPath string    `json:"transcript_path"`
 	Source         string    `json:"source"`
 	Started        time.Time `json:"started"`
+	// The Claude process that started the session and its start time (Unix µs), so a reused pid isn't taken for it.
+	ClaudePID   int   `json:"claude_pid,omitempty"`
+	ClaudeStart int64 `json:"claude_start,omitempty"`
 }
 
 type Prompt struct {
