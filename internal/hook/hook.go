@@ -1,6 +1,8 @@
 // Package hook handles the Claude Code SessionStart and UserPromptSubmit hooks.
 //
-// Both must print nothing to stdout: UserPromptSubmit stdout is injected into Claude's context.
+// Both must print nothing to stdout: UserPromptSubmit stdout is injected into Claude's context. The one exception is
+// /handoff:claude-sessions, which Prompt answers with a JSON block decision: neither the command nor the answer
+// reaches Claude, and it runs here, outside the sandbox.
 package hook
 
 import (
@@ -60,10 +62,30 @@ func SessionStart(q *queue.Queue, r io.Reader, envFile string) error {
 	return err
 }
 
-func Prompt(q *queue.Queue, r io.Reader) error {
+// runSessions answers /handoff:claude-sessions. Tests replace it: the real one talks to Ghostty.
+var runSessions = claudesessions.Command
+
+// sessionsCommand is the argument of /handoff:claude-sessions, also typed without the plugin's name, if p is that.
+func sessionsCommand(p string) (string, bool) {
+	p = strings.TrimSpace(p)
+	for _, name := range []string{"/handoff:claude-sessions", "/claude-sessions"} {
+		if p == name {
+			return "", true
+		}
+		if arg, ok := strings.CutPrefix(p, name+" "); ok {
+			return strings.TrimSpace(arg), true
+		}
+	}
+	return "", false
+}
+
+func Prompt(q *queue.Queue, r io.Reader, w io.Writer) error {
 	in, err := read(r)
 	if err != nil {
 		return err
+	}
+	if arg, ok := sessionsCommand(in.Prompt); ok {
+		return json.NewEncoder(w).Encode(map[string]string{"decision": "block", "reason": runSessions(q, arg, time.Now())})
 	}
 	// Background-task notifications come through this hook too; they aren't the human's words.
 	// shortcut: matched by prefix; revisit if Claude Code adds other injected message kinds.

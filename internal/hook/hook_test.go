@@ -1,6 +1,9 @@
 package hook
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,10 +64,10 @@ func TestSessionStartRejectsInjection(t *testing.T) {
 // words; recording them would show a chained item's provenance as the previous item's output.
 func TestPromptSkipsTaskNotifications(t *testing.T) {
 	q := &queue.Queue{Root: t.TempDir()}
-	Prompt(q, strings.NewReader(`{"session_id":"`+sid+`","prompt":"build the dashboard"}`))
+	Prompt(q, strings.NewReader(`{"session_id":"`+sid+`","prompt":"build the dashboard"}`), io.Discard)
 	time.Sleep(time.Millisecond)
 	note := `{"session_id":"` + sid + `","prompt":"  <task-notification>\n<task-id>x</task-id>\n</task-notification>"}`
-	if err := Prompt(q, strings.NewReader(note)); err != nil {
+	if err := Prompt(q, strings.NewReader(note), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	p, err := q.PromptBefore(sid, time.Now())
@@ -76,11 +79,50 @@ func TestPromptSkipsTaskNotifications(t *testing.T) {
 func TestPrompt(t *testing.T) {
 	q := &queue.Queue{Root: t.TempDir()}
 	in := `{"session_id":"` + sid + `","prompt":"make the dashboard\nplease"}`
-	if err := Prompt(q, strings.NewReader(in)); err != nil {
+	var out bytes.Buffer
+	if err := Prompt(q, strings.NewReader(in), &out); err != nil {
 		t.Fatal(err)
+	}
+	if out.Len() != 0 { // stdout would be injected into Claude's context
+		t.Fatalf("stdout = %q", out.String())
 	}
 	p, err := q.PromptBefore(sid, time.Now())
 	if err != nil || p.Prompt != "make the dashboard\nplease" {
 		t.Fatalf("prompt = %+v %v", p, err)
+	}
+}
+
+// /handoff:claude-sessions is answered by the hook and blocked, so Claude never sees it; it isn't the agent's
+// provenance either, so it isn't recorded.
+func TestSessionsCommandAnsweredByTheHook(t *testing.T) {
+	var args []string
+	old := runSessions
+	runSessions = func(q *queue.Queue, arg string, now time.Time) string {
+		args = append(args, arg)
+		return "saved 1 window · 2 sessions"
+	}
+	t.Cleanup(func() { runSessions = old })
+	q := &queue.Queue{Root: t.TempDir()}
+	for _, p := range []string{"/handoff:claude-sessions save", "  /claude-sessions restore\\n", "/handoff:claude-sessions"} {
+		var out bytes.Buffer
+		if err := Prompt(q, strings.NewReader(`{"session_id":"`+sid+`","prompt":"`+p+`"}`), &out); err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]string
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil || got["decision"] != "block" || got["reason"] != "saved 1 window · 2 sessions" {
+			t.Fatalf("%q: stdout = %q", p, out.String())
+		}
+	}
+	if want := []string{"save", "restore", ""}; strings.Join(args, ",") != strings.Join(want, ",") {
+		t.Fatalf("args = %q, want %q", args, want)
+	}
+	if _, err := q.PromptBefore(sid, time.Now()); err == nil {
+		t.Fatal("the command was recorded as the agent's prompt")
+	}
+	// Anything else is an ordinary prompt: recorded, and nothing on stdout.
+	var out bytes.Buffer
+	Prompt(q, strings.NewReader(`{"session_id":"`+sid+`","prompt":"/handoff:claude-sessionsave"}`), &out)
+	if out.Len() != 0 || len(args) != 3 {
+		t.Fatalf("a near miss was handled: stdout=%q", out.String())
 	}
 }

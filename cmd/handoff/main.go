@@ -63,7 +63,7 @@ func runHook(q *queue.Queue, event string) error {
 	if err == nil && event == "session-start" {
 		err = hook.SessionStart(q, bytes.NewReader(in), os.Getenv("CLAUDE_ENV_FILE"))
 	} else if err == nil {
-		err = hook.Prompt(q, bytes.NewReader(in))
+		err = hook.Prompt(q, bytes.NewReader(in), os.Stdout)
 	}
 	logHook(q.Root, event, in, err)
 	return err
