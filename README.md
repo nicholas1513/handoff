@@ -124,6 +124,8 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   folder, age and pending count. The detail pane is in sections: status chips, description,
   warnings, Command (one flag per line, every word verbatim), Why, attached files, Integrity and
   Result.
+- **Manual:** `?` opens a brief overview of what the viewer does, as does the **Manual** row in
+  settings. `↑↓` scrolls, `esc` closes it, and nothing behind it reacts while it's open.
 - **Saving and restoring Claude sessions** (Ghostty 1.4+, on macOS and on Linux with the GTK build):
   `ctrl+s` in the viewer, or `/handoff:claude-sessions save` in any Claude tab, saves the running
   sessions with their Ghostty windows and tabs. `ctrl+l` in the viewer opens a small confirmation

@@ -347,7 +347,12 @@ func (m model) overlay() (lines []string, x, y int) {
 		}
 		rows = append(rows, mark+fmt.Sprintf("%-22s", r.label)+bold.Render(r.value(m.settings, m.vscode != nil)))
 	}
-	body := strings.Join(append(rows, "", dim.Render("↑↓ select · space / click toggle · esc close")), "\n")
+	mark := "  "
+	if m.menuSel == len(settingRows) {
+		mark = "› "
+	}
+	rows = append(rows, mark+fmt.Sprintf("%-22s", "Manual")+bold.Render("[ open ]"))
+	body := strings.Join(append(rows, "", dim.Render("↑↓ select · space / click change · esc close")), "\n")
 	lines = strings.Split(focused.Padding(0, 1).Render(body), "\n")
 	w := lipgloss.Width(lines[0])
 	return lines, max(0, (m.w-w)/2), max(0, (m.h-len(lines))/2)
