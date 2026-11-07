@@ -38,3 +38,9 @@ func parseStat(s string) (procInfo, bool) {
 	}
 	return procInfo{ppid: ppid, start: start, tty: tty, name: s[open+1 : end]}, true
 }
+
+// startMatches tells a listed session's process from a later one that reused its pid. Claude Code records the same
+// clock ticks /proc reports.
+func startMatches(r registered, p procInfo) bool {
+	return r.ProcStart == strconv.FormatInt(p.start, 10)
+}

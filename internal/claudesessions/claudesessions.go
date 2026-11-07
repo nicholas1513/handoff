@@ -77,9 +77,28 @@ type liveSession struct {
 	tty int64
 }
 
-// live is the newest session of each Claude process still running, by pid. /clear and /resume start a new session
-// in the same process; a pid whose start time differs belongs to another process now.
+// live is the session of each Claude process still running, by pid: what Claude Code lists, which covers sessions
+// the plugin never saw, then the hook records for any process it doesn't list.
 func live(q *queue.Queue) map[int]liveSession {
+	out := map[int]liveSession{}
+	hooked := liveFromHooks(q)
+	for pid, l := range liveFromClaude() {
+		if h, ok := hooked[pid]; ok && h.SessionID == l.SessionID {
+			l.TranscriptPath = h.TranscriptPath // the hook was told it; otherwise it's looked for
+		}
+		out[pid] = l
+	}
+	for pid, l := range hooked {
+		if _, ok := out[pid]; !ok {
+			out[pid] = l
+		}
+	}
+	return out
+}
+
+// liveFromHooks is the newest session the hook recorded for each process still running. /clear and /resume start a
+// new session in the same process; a pid whose start time differs belongs to another process now.
+func liveFromHooks(q *queue.Queue) map[int]liveSession {
 	ents, _ := os.ReadDir(filepath.Join(q.Root, "sessions"))
 	out := map[int]liveSession{}
 	for _, e := range ents {
@@ -104,7 +123,6 @@ func tabOf(l liveSession) Tab { return Tab{l.SessionID, l.Cwd, l.TranscriptPath}
 // Save records the running sessions by Ghostty window and tab. Sessions Ghostty doesn't show (another terminal, or
 // Ghostty not answering) go in one more window. It refuses to save none, so a save made right after a reboot keeps
 // the one worth restoring.
-// shortcut: sessions started before handoff recorded pids are left out until restarted or /cleared.
 // shortcut: a tab split into several Claude terminals comes back as one tab per terminal.
 func Save(q *queue.Queue, now time.Time) (string, error) {
 	ls := live(q)
