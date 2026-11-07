@@ -12,3 +12,6 @@ var proc = func(pid int) (procInfo, bool) {
 	return procInfo{ppid: int(k.Eproc.Ppid), start: st.Sec*1e6 + int64(st.Usec), tty: int64(k.Eproc.Tdev),
 		name: unix.ByteSliceToString(k.Proc.P_comm[:])}, true
 }
+
+// startMatches tells a listed session's process from a later one that reused its pid.
+func startMatches(r registered, p procInfo) bool { return startedNear(r.StartedAt, p.start) }

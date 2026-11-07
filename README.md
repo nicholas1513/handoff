@@ -130,9 +130,11 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   `/handoff:claude-sessions restore`, reopens them after a reboot or crash: one Ghostty window per
   saved window, each tab running `claude --resume <id>` in its folder. Sessions still running aren't
   opened again. The Sessions pane title shows the last save. The prompt hook answers the slash
-  command, so Claude never sees it. A save leaves out sessions started before this version (restart
-  them or `/clear` once), and refuses to save when nothing is running, so it can't overwrite the
-  last save.
+  command, so Claude never sees it. Running sessions come from Claude Code's own list in
+  `~/.claude/sessions/`, so they needn't have the plugin. That format is undocumented, so the hook's
+  records still cover any session it doesn't list or that can't be read; a session found only that
+  way needs a restart or `/clear` after this version is installed. A save refuses to run when
+  nothing is running, so it can't overwrite the last save.
   - **macOS:** the first save or restore makes macOS ask whether your terminal may control Ghostty.
     A tab split into several Claude terminals comes back as one tab each.
   - **Linux:** Ghostty has no command that lists its tabs, so a save reads them from the
@@ -158,6 +160,7 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 | Stale items | Items expire 24h after creation; stretched expiry in `item.json` is rejected. |
 | Agent revokes another session's item | `handoff revoke` refuses items from other sessions. The marker sits in the sandbox-writable `queue/<id>/revoked`, so an agent writing it by hand isn't blocked, but a marker can only stop an item, never run one, and a claimed (running) item ignores it. |
 | Agent plants sessions for restore to type | The save is in `~/.handoff/claude-sessions.json`, outside the sandbox-writable `queue/`. Restore runs only `claude --resume <id>` and only for an id shaped like a session id; the folder is passed to Ghostty as a setting, never typed or put in shell text. |
+| A forged entry in Claude Code's session list | An entry counts only if its process is running, in a terminal, and started when the entry says; its id must be shaped like a session id, and its folder is only ever an argument. |
 | A tab's title carries terminal escapes back into a tab | On Linux a save puts a tab's title back by writing it to that terminal. Control characters are dropped first, so a title can't end the sequence and start another. |
 | Cancel signals an unrelated process | A stale run's pid is signalled only if the kernel still reports the item's program for it, so a reused pid is left alone. |
 

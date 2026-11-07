@@ -35,7 +35,8 @@ type world struct {
 
 func newWorld(t *testing.T) *world {
 	w := &world{q: &queue.Queue{Root: t.TempDir()}, pids: map[int]procInfo{}}
-	oldProc, oldTTY, oldList, oldOpen := proc, ttyDev, ghosttyTerminals, openWindows
+	oldProc, oldTTY, oldList, oldOpen, oldDir := proc, ttyDev, ghosttyTerminals, openWindows, claudeDir
+	claudeDir = func() string { return filepath.Join(w.q.Root, "claude") }
 	proc = func(pid int) (procInfo, bool) { p, ok := w.pids[pid]; return p, ok }
 	ttyDev = func(path string) (int64, bool) {
 		n, err := strconv.ParseInt(strings.TrimPrefix(path, "/dev/ttys"), 10, 64)
@@ -47,7 +48,9 @@ func newWorld(t *testing.T) *world {
 		w.opens = append(w.opens, ws)
 		return nil
 	}
-	t.Cleanup(func() { proc, ttyDev, ghosttyTerminals, openWindows = oldProc, oldTTY, oldList, oldOpen })
+	t.Cleanup(func() {
+		proc, ttyDev, ghosttyTerminals, openWindows, claudeDir = oldProc, oldTTY, oldList, oldOpen, oldDir
+	})
 	return w
 }
 

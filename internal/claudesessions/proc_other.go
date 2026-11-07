@@ -12,3 +12,5 @@ var ttyDev = func(path string) (int64, bool) { return 0, false }
 var ghosttyTerminals = func([]int) ([]terminal, error) { return nil, errors.New("not supported on this OS") }
 
 var openWindows = func(windows [][]Tab) error { return errors.New("not supported on this OS") }
+
+func startMatches(r registered, p procInfo) bool { return false }
