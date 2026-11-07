@@ -126,8 +126,10 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   Result.
 - **Saving and restoring Claude sessions** (Ghostty 1.4+, on macOS and on Linux with the GTK build):
   `ctrl+s` in the viewer, or `/handoff:claude-sessions save` in any Claude tab, saves the running
-  sessions with their Ghostty windows and tabs. `ctrl+l` twice in the viewer, or
-  `/handoff:claude-sessions restore`, reopens them after a reboot or crash: one Ghostty window per
+  sessions with their Ghostty windows and tabs. `ctrl+l` in the viewer opens a small confirmation
+  (`space` restores, `x` or **Reject** cancels, and nothing behind it reacts while it's open);
+  `/handoff:claude-sessions restore` restores with no confirmation. A restore reopens the sessions
+  after a reboot or crash: one Ghostty window per
   saved window, each tab running `claude --resume <id>` in its folder. Sessions still running aren't
   opened again. The Sessions pane title shows the last save. The prompt hook answers the slash
   command, so Claude never sees it. Running sessions come from Claude Code's own list in

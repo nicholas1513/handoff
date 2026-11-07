@@ -102,7 +102,7 @@ type model struct {
 	quitArmed     bool // keyboard: q pressed while runs are in flight, waiting for the second
 	cancelArmed   bool // keyboard: one c pressed on a running item, waiting for the second
 	cancelConfirm bool // mouse: Cancel run clicked, waiting for Yes
-	restoreArmed  string // keyboard: one ctrl+l pressed, waiting for the second; what it would restore
+	restoreArmed  string // the restore overlay is open; what it would restore
 	saved         string // the last save of the running sessions, for the Sessions pane title
 	scroll   int
 	itemTop  int            // first items-pane row drawn
@@ -813,6 +813,16 @@ func (m *model) arm() {
 }
 
 func (m model) key(k string) (tea.Model, tea.Cmd) {
+	if m.restoreArmed != "" { // the overlay takes every key while open: nothing reaches the item behind it
+		switch k {
+		case " ":
+			m.restoreArmed = ""
+			return m, restoreCmd(m.q)
+		case "x":
+			m.restoreArmed = ""
+		}
+		return m, nil
+	}
 	if m.menu { // the overlay takes every key while open
 		switch k {
 		case " ", "enter":
@@ -837,13 +847,6 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		m.cancelArmed = false
 		if k == "c" {
 			m.cancel()
-		} // any other key only disarms and is not acted on
-		return m, nil
-	}
-	if m.restoreArmed != "" {
-		m.restoreArmed = ""
-		if k == "ctrl+l" {
-			return m, restoreCmd(m.q)
 		} // any other key only disarms and is not acted on
 		return m, nil
 	}
@@ -980,9 +983,6 @@ func (m model) footer() (string, int) {
 	if n := len(m.runs); m.quitArmed {
 		msg = fmt.Sprintf("%d run%s in progress: q again to quit", n, map[bool]string{true: "s"}[n > 1])
 	}
-	if m.restoreArmed != "" {
-		msg = "restore " + m.restoreArmed + ": ctrl+l again"
-	}
 	f := m.rc.foot.get(styleKey{plain, msg, lookNow()}, func() footLine {
 		status, x := dim.Render(plain), ansi.StringWidth(plain[:strings.Index(plain, settingsKey)])
 		if msg != "" {
@@ -1013,6 +1013,12 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		pane = 1
 	}
 	press := msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft
+	if m.restoreArmed != "" { // the overlay takes every mouse event while open, the wheel and releases too
+		if !press {
+			return m, nil
+		}
+		return m.restoreClick(msg.X, msg.Y)
+	}
 	if m.menu { // the overlay takes every click while open
 		if press {
 			ol, ox, oy := m.overlay()
@@ -1026,8 +1032,8 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if (m.armed || m.cancelArmed || m.quitArmed || m.restoreArmed != "") && press {
-		m.armed, m.cancelArmed, m.quitArmed, m.restoreArmed = false, false, false, "" // a click only cancels the arm; it is not acted on
+	if (m.armed || m.cancelArmed || m.quitArmed) && press {
+		m.armed, m.cancelArmed, m.quitArmed = false, false, false // a click only cancels the arm; it is not acted on
 		return m, nil
 	}
 	switch {
@@ -1163,8 +1169,12 @@ func (m model) View() string {
 		}
 	}
 	v := b.String()
-	if m.menu {
-		v = m.withOverlay(v)
+	if m.restoreArmed != "" {
+		ol, x, y := m.restoreOverlay()
+		v = withOverlay(v, ol, x, y)
+	} else if m.menu {
+		ol, x, y := m.overlay()
+		v = withOverlay(v, ol, x, y)
 	}
 	return v
 }
