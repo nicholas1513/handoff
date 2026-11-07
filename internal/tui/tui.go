@@ -103,6 +103,9 @@ type model struct {
 	cancelArmed   bool // keyboard: one c pressed on a running item, waiting for the second
 	cancelConfirm bool // mouse: Cancel run clicked, waiting for Yes
 	restoreArmed  string // the restore overlay is open; what it would restore
+	closeAsk      string // the close prompt is open; its question
+	closeYes      bool   // Yes is picked in it
+	closeBusy     int    // how many of those tabs are working
 	saved         string // the last save of the running sessions, for the Sessions pane title
 	scroll   int
 	itemTop  int            // first items-pane row drawn
@@ -798,6 +801,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refresh()
 		m.advance(msg.id)
+	case savedMsg:
+		m.askClose(msg)
+		return m, nil
 	case statusMsg:
 		m.status = string(msg)
 	case *amView:
@@ -824,6 +830,9 @@ func (m *model) arm() {
 }
 
 func (m model) key(k string) (tea.Model, tea.Cmd) {
+	if m.closeAsk != "" {
+		return m.closeKey(k)
+	}
 	if m.restoreArmed != "" { // the overlay takes every key while open: nothing reaches the item behind it
 		switch k {
 		case " ":
@@ -1031,6 +1040,9 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		pane = 1
 	}
 	press := msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft
+	if m.closeAsk != "" { // keys only: it takes every mouse event and acts on none
+		return m, nil
+	}
 	if m.restoreArmed != "" { // the overlay takes every mouse event while open, the wheel and releases too
 		if !press {
 			return m, nil
@@ -1191,6 +1203,9 @@ func (m model) View() string {
 	}
 	v := b.String()
 	switch {
+	case m.closeAsk != "":
+		ol, x, y := m.closeOverlay()
+		v = withOverlay(v, ol, x, y)
 	case m.restoreArmed != "":
 		ol, x, y := m.restoreOverlay()
 		v = withOverlay(v, ol, x, y)

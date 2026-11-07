@@ -128,7 +128,11 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   settings. `↑↓` scrolls, `esc` closes it, and nothing behind it reacts while it's open.
 - **Saving and restoring Claude sessions** (Ghostty 1.4+, on macOS and on Linux with the GTK build):
   `ctrl+s` in the viewer, or `/handoff:claude-sessions save` in any Claude tab, saves the running
-  sessions with their Ghostty windows and tabs. `ctrl+l` in the viewer opens a small confirmation
+  sessions with their Ghostty windows and tabs. A save in the viewer then offers to close the
+  saved tabs: `←` `→` choose, `space` or `enter` selects, and it defaults to **No**. Closing hangs up
+  each tab's shell and its Claude, so work in progress stops; a restore resumes them. It leaves out
+  tabs that have moved on since the save, and keeps the viewer's own tab while a run is in progress.
+  `ctrl+l` in the viewer opens a small confirmation
   (`space` restores, `x` or **Reject** cancels, and nothing behind it reacts while it's open);
   `/handoff:claude-sessions restore` restores with no confirmation. A restore reopens the sessions
   after a reboot or crash: one Ghostty window per
@@ -166,6 +170,7 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 | Agent plants sessions for restore to type | The save is in `~/.handoff/claude-sessions.json`, outside the sandbox-writable `queue/`. Restore runs only `claude --resume <id>` and only for an id shaped like a session id; the folder is passed to Ghostty as a setting, never typed or put in shell text. |
 | A forged entry in Claude Code's session list | An entry counts only if its process is running, in a terminal, and started when the entry says; its id must be shaped like a session id, and its folder is only ever an argument. |
 | A tab's title carries terminal escapes back into a tab | On Linux a save puts a tab's title back by writing it to that terminal. Control characters are dropped first, so a title can't end the sequence and start another. |
+| Closing saved tabs signals an unrelated process | Close starts from what's running now, by session id, and hangs up a session leader only if it holds the same terminal as that session's Claude. It only runs after a prompt that defaults to No. |
 | Cancel signals an unrelated process | A stale run's pid is signalled only if the kernel still reports the item's program for it, so a reused pid is left alone. |
 
 Remaining gap: an agent can name another real session's id. The viewer then shows that session's

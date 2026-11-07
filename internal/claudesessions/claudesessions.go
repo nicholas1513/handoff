@@ -74,7 +74,8 @@ func Load(root string) (Saved, error) {
 
 type liveSession struct {
 	queue.Session
-	tty int64
+	tty  int64
+	busy bool // Claude Code's list says it's working; the hook's records don't say
 }
 
 // live is the session of each Claude process still running, by pid: what Claude Code lists, which covers sessions
@@ -113,7 +114,7 @@ func liveFromHooks(q *queue.Queue) map[int]liveSession {
 		if cur, ok := out[s.ClaudePID]; ok && !s.Started.After(cur.Started) {
 			continue
 		}
-		out[s.ClaudePID] = liveSession{s, p.tty}
+		out[s.ClaudePID] = liveSession{Session: s, tty: p.tty}
 	}
 	return out
 }

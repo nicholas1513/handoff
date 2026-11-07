@@ -14,3 +14,7 @@ var ghosttyTerminals = func([]int) ([]terminal, error) { return nil, errors.New(
 var openWindows = func(windows [][]Tab) error { return errors.New("not supported on this OS") }
 
 func startMatches(r registered, p procInfo) bool { return false }
+
+var sessionLeader = func(pid int) (int, bool) { return 0, false }
+
+var hangUp = func(pid int) error { return errors.New("not supported on this OS") }
