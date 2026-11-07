@@ -29,27 +29,25 @@ type world struct {
 	pids    map[int]procInfo
 	ghostty string // what the query script prints
 	gerr    error
-	calls   [][]string // osascript calls after the script: the open script's arguments
+	opens   [][][]Tab // each openWindows call
 	opened  bool
 }
 
 func newWorld(t *testing.T) *world {
 	w := &world{q: &queue.Queue{Root: t.TempDir()}, pids: map[int]procInfo{}}
-	oldProc, oldTTY, oldOsa := proc, ttyDev, osascript
+	oldProc, oldTTY, oldList, oldOpen := proc, ttyDev, ghosttyTerminals, openWindows
 	proc = func(pid int) (procInfo, bool) { p, ok := w.pids[pid]; return p, ok }
 	ttyDev = func(path string) (int64, bool) {
 		n, err := strconv.ParseInt(strings.TrimPrefix(path, "/dev/ttys"), 10, 64)
 		return n, err == nil
 	}
-	osascript = func(script string, args ...string) (string, error) {
-		if script == queryScript {
-			return w.ghostty, w.gerr
-		}
+	ghosttyTerminals = func([]int) ([]terminal, error) { return parseTerminals(w.ghostty), w.gerr }
+	openWindows = func(ws [][]Tab) error {
 		w.opened = true
-		w.calls = append(w.calls, args)
-		return "", nil
+		w.opens = append(w.opens, ws)
+		return nil
 	}
-	t.Cleanup(func() { proc, ttyDev, osascript = oldProc, oldTTY, oldOsa })
+	t.Cleanup(func() { proc, ttyDev, ghosttyTerminals, openWindows = oldProc, oldTTY, oldList, oldOpen })
 	return w
 }
 
@@ -179,9 +177,8 @@ func TestRestoreOpensWhatIsNotRunning(t *testing.T) {
 	if err != nil || msg != "restored 2 windows · 2 sessions (1 running, 1 gone)" {
 		t.Fatalf("Restore = %q %v", msg, err)
 	}
-	want := [][]string{{"0", "/src/b", idB, "1", "/src/d", idD}}
-	if !reflect.DeepEqual(w.calls, want) {
-		t.Fatalf("open args = %q, want %q", w.calls, want)
+	if len(w.opens) != 1 || !reflect.DeepEqual(ids(w.opens[0]), [][]string{{"b"}, {"d"}}) || w.opens[0][1][0].Cwd != "/src/d" {
+		t.Fatalf("opened %+v, want B and D in their own windows and folders", w.opens)
 	}
 }
 

@@ -10,7 +10,7 @@ type procInfo struct {
 
 const noTTY = -1
 
-var shells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true}
+var shells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "fish": true}
 
 // Owner returns the Claude process a hook runs under, starting from the hook's parent pid, and its start time.
 // Claude runs its children without a controlling terminal, through a shell or a wrapper, so it is the first
