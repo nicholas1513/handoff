@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,7 +14,11 @@ import (
 
 // Saving (ctrl+s) and restoring (ctrl+l, confirmed in an overlay) the running Claude sessions. Tests replace these.
 var (
-	saveSessions    = claudesessions.Save
+	saveSessions = claudesessions.Save
+	closableTabs = claudesessions.Closable
+	closeTabs    = func(q *queue.Queue, keepOwn bool) (string, error) {
+		return claudesessions.Close(q, keepOwn, closeSettle)
+	}
 	prepareRestore  = claudesessions.Prepare
 	restoreSessions = func(p claudesessions.Plan) (string, error) { return p.Restore() }
 )
@@ -27,6 +32,15 @@ func savedLabel(root string, now time.Time) string {
 	return s.Label(now)
 }
 
+// closeSettle is how long the viewer's own tab waits for the others before it goes too.
+const closeSettle = 300 * time.Millisecond
+
+// savedMsg is a finished save, and the saved tabs the viewer can offer to close.
+type savedMsg struct {
+	status     string
+	tabs, busy int
+}
+
 // saveCmd saves off the event loop: it asks Ghostty for its layout.
 func saveCmd(q *queue.Queue, now time.Time) tea.Cmd {
 	return func() tea.Msg {
@@ -34,8 +48,67 @@ func saveCmd(q *queue.Queue, now time.Time) tea.Cmd {
 		if err != nil {
 			return statusMsg("save sessions: " + err.Error())
 		}
+		tabs, busy := closableTabs(q)
+		return savedMsg{msg, tabs, busy}
+	}
+}
+
+// askClose opens the close prompt. A save finishes whenever it does, so whatever was armed by then is dropped: its
+// next key mustn't answer this prompt and then a run's.
+func (m *model) askClose(s savedMsg) {
+	m.status = s.status
+	if s.tabs == 0 {
+		return
+	}
+	m.closeAsk, m.closeYes = fmt.Sprintf("Close the %d saved Claude tabs?", s.tabs), false
+	if s.tabs == 1 {
+		m.closeAsk = "Close the saved Claude tab?"
+	}
+	m.closeBusy = s.busy
+	m.armed, m.confirm, m.cancelArmed, m.cancelConfirm, m.quitArmed = false, false, false, false, false
+}
+
+// closeKey handles every key while the close prompt is open. ← → pick, and it defaults to No on the left.
+func (m model) closeKey(k string) (tea.Model, tea.Cmd) {
+	switch k {
+	case "left":
+		m.closeYes = false
+	case "right":
+		m.closeYes = true
+	case " ", "enter":
+		m.closeAsk = ""
+		if m.closeYes {
+			return m, closeCmd(m.q, len(m.runs) > 0)
+		}
+	}
+	return m, nil
+}
+
+func closeCmd(q *queue.Queue, keepOwn bool) tea.Cmd {
+	return func() tea.Msg {
+		msg, err := closeTabs(q, keepOwn)
+		if err != nil {
+			return statusMsg("close tabs: " + err.Error())
+		}
 		return statusMsg(msg)
 	}
+}
+
+// closeOverlay is the close prompt as drawn, and where it sits (top-left cell) when centred in the window.
+func (m model) closeOverlay() (lines []string, x, y int) {
+	no, yes := "[ No ]", "[ Yes ]"
+	if m.closeYes {
+		yes = sel.Render(yes)
+	} else {
+		no = sel.Render(no)
+	}
+	rows := []string{section.Render("Sessions saved"), m.closeAsk}
+	if m.closeBusy > 0 {
+		rows = append(rows, warn.Render(fmt.Sprintf("%d still working: it stops now", m.closeBusy)))
+	}
+	rows = append(rows, "", no+"  "+yes, dim.Render("← → choose · space / enter select"))
+	lines = strings.Split(focused.Padding(0, 1).Render(strings.Join(rows, "\n")), "\n")
+	return lines, max(0, (m.w-lipgloss.Width(lines[0]))/2), max(0, (m.h-len(lines))/2)
 }
 
 // The restore overlay's button row, counted from its top border, and its buttons, from its left border.

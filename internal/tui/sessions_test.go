@@ -22,7 +22,8 @@ func key(m model, t tea.KeyType) (model, tea.Cmd) {
 // fakeSessions plans one window to restore and counts restores.
 func fakeSessions(t *testing.T, open int) *int {
 	restored := 0
-	oldP, oldR, oldS := prepareRestore, restoreSessions, saveSessions
+	oldP, oldR, oldS, oldC := prepareRestore, restoreSessions, saveSessions, closableTabs
+	closableTabs = func(*queue.Queue) (int, int) { return 0, 0 }
 	prepareRestore = func(*queue.Queue) (claudesessions.Plan, error) {
 		p := claudesessions.Plan{Running: 1}
 		if open > 0 {
@@ -32,7 +33,7 @@ func fakeSessions(t *testing.T, open int) *int {
 	}
 	restoreSessions = func(claudesessions.Plan) (string, error) { restored++; return "restored", nil }
 	saveSessions = func(*queue.Queue, time.Time) (string, error) { return "saved 1 window · 2 sessions", nil }
-	t.Cleanup(func() { prepareRestore, restoreSessions, saveSessions = oldP, oldR, oldS })
+	t.Cleanup(func() { prepareRestore, restoreSessions, saveSessions, closableTabs = oldP, oldR, oldS, oldC })
 	return &restored
 }
 
@@ -167,5 +168,108 @@ func TestSessionsTitleShowsLastSave(t *testing.T) {
 	// A narrow pane cuts the counts first; when the save ran stays readable.
 	if got := ansi.Strip(m.sessionsPane(26, 20)[1]); !strings.Contains(got, "saved "+at.Format("15:04")) || ansi.StringWidth(got) != 26 {
 		t.Fatalf("narrow title row = %q", got)
+	}
+}
+
+// saveThenPrompt saves with tabs to offer, and counts closes and whether the viewer's tab was kept.
+func saveThenPrompt(t *testing.T, m model, tabs, busy int) (model, *[]bool) {
+	t.Helper()
+	fakeSessions(t, 0)
+	closableTabs = func(*queue.Queue) (int, int) { return tabs, busy }
+	var closes []bool
+	old := closeTabs
+	closeTabs = func(_ *queue.Queue, keepOwn bool) (string, error) {
+		closes = append(closes, keepOwn)
+		return "closed", nil
+	}
+	t.Cleanup(func() { closeTabs = old })
+	m, cmd := key(m, tea.KeyCtrlS)
+	next, _ := m.Update(cmd())
+	return next.(model), &closes
+}
+
+func TestSaveOffersToCloseDefaultingToNo(t *testing.T) {
+	_, m := setup(t)
+	m.w, m.h = 120, 40
+	m, closes := saveThenPrompt(t, m, 3, 1)
+	v := ansi.Strip(m.View())
+	for _, want := range []string{"Close the 3 saved Claude tabs?", "[ No ]  [ Yes ]", "1 still working", "space / enter select"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("prompt is missing %q:\n%s", want, v)
+		}
+	}
+	if m.closeYes {
+		t.Fatal("must default to No")
+	}
+	m, cmd := press(m, " ")
+	if cmd != nil || m.closeAsk != "" || len(*closes) != 0 {
+		t.Fatalf("space on No: cmd=%v open=%q closes=%v", cmd != nil, m.closeAsk, *closes)
+	}
+}
+
+func TestCloseArrowsAndBothSelectKeys(t *testing.T) {
+	for name, sel := range map[string]tea.KeyType{"space": tea.KeySpace, "enter": tea.KeyEnter} {
+		_, m := setup(t)
+		m, closes := saveThenPrompt(t, m, 2, 0)
+		m, _ = key(m, tea.KeyLeft)
+		if m.closeYes {
+			t.Fatalf("%s: left moved off No", name)
+		}
+		m, _ = key(m, tea.KeyRight)
+		m, _ = key(m, tea.KeyRight)
+		if !m.closeYes {
+			t.Fatalf("%s: right didn't pick Yes", name)
+		}
+		m, cmd := key(m, sel)
+		if cmd == nil || m.closeAsk != "" {
+			t.Fatalf("%s: didn't close", name)
+		}
+		next, _ := m.Update(cmd())
+		if m = next.(model); len(*closes) != 1 || (*closes)[0] || m.status != "closed" {
+			t.Fatalf("%s: closes=%v status=%q", name, *closes, m.status)
+		}
+	}
+}
+
+// Nothing reaches the item behind the prompt, and a run in progress keeps the viewer's own tab.
+func TestClosePromptSwallowsEverything(t *testing.T) {
+	q, m := setup(t)
+	m.w, m.h = 120, 40
+	m, closes := saveThenPrompt(t, m, 2, 0)
+	sel, focus := m.ii, m.focus
+	for _, k := range []string{"x", "r", "j", "q", "s", "?", "c", "o"} {
+		var cmd tea.Cmd
+		if m, cmd = press(m, k); cmd != nil {
+			t.Fatalf("%q returned a command", k)
+		}
+	}
+	m, _ = key(m, tea.KeyEsc)
+	m, _ = click(m, m.w/2, m.h/2)
+	m, _ = click(m, 1, listTop)
+	if m.closeAsk == "" || m.ii != sel || m.focus != focus || m.menu || m.manual || m.armed || len(*closes) != 0 {
+		t.Fatalf("leaked: open=%q ii=%d focus=%d menu=%v manual=%v armed=%v", m.closeAsk, m.ii, m.focus, m.menu, m.manual, m.armed)
+	}
+	if st := q.State(*m.item(), time.Now()); st != queue.Pending {
+		t.Fatalf("item state = %v", st)
+	}
+}
+
+// A save lands whenever it lands: a first space already pressed mustn't carry over into the prompt and on to a run.
+func TestClosePromptDropsWhatWasArmed(t *testing.T) {
+	_, m := setup(t)
+	fakeSessions(t, 0)
+	closableTabs = func(*queue.Queue) (int, int) { return 2, 0 }
+	m.armed = true
+	next, _ := m.Update(savedMsg{"saved", 2, 0})
+	if m = next.(model); m.armed || m.closeAsk == "" {
+		t.Fatalf("armed=%v open=%q", m.armed, m.closeAsk)
+	}
+}
+
+func TestSaveWithNothingToCloseDoesNotAsk(t *testing.T) {
+	_, m := setup(t)
+	m, _ = saveThenPrompt(t, m, 0, 0)
+	if m.closeAsk != "" || m.status == "" {
+		t.Fatalf("open=%q status=%q", m.closeAsk, m.status)
 	}
 }

@@ -19,6 +19,7 @@ type registered struct {
 	StartedAt int64  `json:"startedAt"` // Unix ms
 	ProcStart string `json:"procStart"`
 	Kind      string `json:"kind"`
+	Status    string `json:"status"`
 }
 
 // startedNearBy is how far a process's start may be from when Claude Code recorded it.
@@ -64,8 +65,8 @@ func liveFromClaude() map[int]liveSession {
 		if !ok || p.tty == noTTY || !startMatches(r, p) {
 			continue
 		}
-		out[r.PID] = liveSession{queue.Session{SessionID: r.SessionID, Cwd: r.Cwd, TranscriptPath: transcriptOf(dir, r.SessionID),
-			Started: time.UnixMilli(r.StartedAt), ClaudePID: r.PID}, p.tty}
+		out[r.PID] = liveSession{Session: queue.Session{SessionID: r.SessionID, Cwd: r.Cwd, TranscriptPath: transcriptOf(dir, r.SessionID),
+			Started: time.UnixMilli(r.StartedAt), ClaudePID: r.PID}, tty: p.tty, busy: r.Status == "busy"}
 	}
 	return out
 }

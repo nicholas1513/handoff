@@ -13,3 +13,12 @@ var ttyDev = func(path string) (int64, bool) {
 	}
 	return int64(st.Rdev), true
 }
+
+// sessionLeader is the process that owns pid's terminal session: in a Ghostty tab, the tab's shell. 0 means this one.
+var sessionLeader = func(pid int) (int, bool) {
+	sid, err := unix.Getsid(pid)
+	return sid, err == nil
+}
+
+// hangUp tells a process its terminal is gone, as closing the tab would.
+var hangUp = func(pid int) error { return unix.Kill(pid, unix.SIGHUP) }
