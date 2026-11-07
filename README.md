@@ -124,16 +124,24 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   folder, age and pending count. The detail pane is in sections: status chips, description,
   warnings, Command (one flag per line, every word verbatim), Why, attached files, Integrity and
   Result.
-- **Saving and restoring Claude sessions** (macOS, Ghostty 1.4+): `ctrl+s` in the viewer, or
-  `/handoff:claude-sessions save` in any Claude tab, saves the running sessions with their Ghostty
-  windows and tabs. `ctrl+l` twice in the viewer, or `/handoff:claude-sessions restore`, reopens
-  them after a reboot or crash: one Ghostty window per saved window, each tab running
-  `claude --resume <id>` in its folder. Sessions still running aren't opened again. The Sessions
-  pane title shows the last save. The prompt hook answers the slash command, so Claude never sees
-  it. The first save or restore makes macOS ask whether your terminal may control Ghostty.
-  A save leaves out sessions started before this version (restart them or `/clear` once), and
-  refuses to save when nothing is running, so it can't overwrite the last save. A tab split into
-  several Claude terminals comes back as one tab each.
+- **Saving and restoring Claude sessions** (Ghostty 1.4+, on macOS and on Linux with the GTK build):
+  `ctrl+s` in the viewer, or `/handoff:claude-sessions save` in any Claude tab, saves the running
+  sessions with their Ghostty windows and tabs. `ctrl+l` twice in the viewer, or
+  `/handoff:claude-sessions restore`, reopens them after a reboot or crash: one Ghostty window per
+  saved window, each tab running `claude --resume <id>` in its folder. Sessions still running aren't
+  opened again. The Sessions pane title shows the last save. The prompt hook answers the slash
+  command, so Claude never sees it. A save leaves out sessions started before this version (restart
+  them or `/clear` once), and refuses to save when nothing is running, so it can't overwrite the
+  last save.
+  - **macOS:** the first save or restore makes macOS ask whether your terminal may control Ghostty.
+    A tab split into several Claude terminals comes back as one tab each.
+  - **Linux:** Ghostty has no command that lists its tabs, so a save reads them from the
+    accessibility bus (AT-SPI) and tells them apart by briefly setting a one-off title on each
+    Claude terminal, then putting it back. Tab titles may flicker; focus doesn't move. Restore opens
+    windows and tabs with `ghostty +new-window` and `+new-tab`, which need Ghostty's D-Bus activation.
+    Sessions it can't place (a busy tab that keeps repainting its title, a split that isn't the
+    focused one, a tab with a fixed title) go in one extra window, and if the accessibility bus
+    isn't there, all of them do.
 
 ## Security model
 
@@ -149,7 +157,8 @@ hook never ran, and an `error` line shows why it failed and which input fields i
 | Terminal tricks in displayed text | Control characters, ANSI escapes and invisible/bidi formatting characters are shown escaped. |
 | Stale items | Items expire 24h after creation; stretched expiry in `item.json` is rejected. |
 | Agent revokes another session's item | `handoff revoke` refuses items from other sessions. The marker sits in the sandbox-writable `queue/<id>/revoked`, so an agent writing it by hand isn't blocked, but a marker can only stop an item, never run one, and a claimed (running) item ignores it. |
-| Agent plants sessions for restore to type | The save is in `~/.handoff/claude-sessions.json`, outside the sandbox-writable `queue/`. Restore types only `claude --resume <id>` and only for an id shaped like a session id; the folder is passed to Ghostty as a setting, never typed. |
+| Agent plants sessions for restore to type | The save is in `~/.handoff/claude-sessions.json`, outside the sandbox-writable `queue/`. Restore runs only `claude --resume <id>` and only for an id shaped like a session id; the folder is passed to Ghostty as a setting, never typed or put in shell text. |
+| A tab's title carries terminal escapes back into a tab | On Linux a save puts a tab's title back by writing it to that terminal. Control characters are dropped first, so a title can't end the sequence and start another. |
 | Cancel signals an unrelated process | A stale run's pid is signalled only if the kernel still reports the item's program for it, so a reused pid is left alone. |
 
 Remaining gap: an agent can name another real session's id. The viewer then shows that session's

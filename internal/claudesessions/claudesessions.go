@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -118,7 +118,8 @@ func Save(q *queue.Queue, now time.Time) (string, error) {
 		}
 	}
 	s, win, done := Saved{SavedAt: now}, map[string]int{}, map[string]bool{}
-	ts, gerr := ghosttyTerminals()
+	pids := slices.Sorted(maps.Keys(ls))
+	ts, gerr := ghosttyTerminals(pids)
 	for _, t := range ts {
 		dev, ok := ttyDev(t.tty)
 		l, found := byTTY[dev]
@@ -245,16 +246,14 @@ func (p Plan) Restore() (string, error) {
 	if len(p.Open) == 0 {
 		return "nothing to restore: " + p.Summary(), nil
 	}
-	var args []string
-	for i, w := range p.Open {
+	for _, w := range p.Open {
 		for _, t := range w {
-			if !uuid.MatchString(t.SessionID) { // checked again here: the id is typed into a shell
+			if !uuid.MatchString(t.SessionID) { // checked again here: the id reaches a shell
 				return "", fmt.Errorf("not a session id: %q", t.SessionID)
 			}
-			args = append(args, strconv.Itoa(i), t.Cwd, t.SessionID)
 		}
 	}
-	if _, err := osascript(openScript, args...); err != nil {
+	if err := openWindows(p.Open); err != nil {
 		return "", err
 	}
 	return "restored " + p.Summary(), nil
