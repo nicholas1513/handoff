@@ -99,29 +99,26 @@ type model struct {
 	armed    bool // keyboard: one space pressed, waiting for the second
 	// this viewer's runs in flight by item id; copied on write
 	runs          map[string]*run
-	quitArmed     bool // keyboard: q pressed while runs are in flight, waiting for the second
-	cancelArmed   bool // keyboard: one c pressed on a running item, waiting for the second
-	cancelConfirm bool // mouse: Cancel run clicked, waiting for Yes
-	restoreArmed  string // the restore overlay is open; what it would restore
-	closeAsk      string // the close prompt is open; its question
-	closeYes      bool   // Yes is picked in it
-	closeBusy     int    // how many of those tabs are working
+	quitArmed     bool   // keyboard: q pressed while runs are in flight, waiting for the second
+	cancelArmed   bool   // keyboard: one c pressed on a running item, waiting for the second
+	cancelConfirm bool   // mouse: Cancel run clicked, waiting for Yes
+	prompt        prompt // the Yes or No question on screen, if any
 	saved         string // the last save of the running sessions, for the Sessions pane title
-	scroll   int
-	itemTop  int            // first items-pane row drawn
-	boxTop   map[string]int // first line drawn per box id ("result", "prompt", "file:<name>"); copied on write
-	boxSel   string         // selected box; "" or an unframed id means the first framed box
-	diff     fileDiff       // the reviewed edit item's diff, parsed at open
-	diffExp  map[int][2]int // context revealed per gap between hunks; copied on write
-	boxX     map[string]int // pan offset per unwrapped box id; copied on write
-	settings viewerSettings
-	menu     bool // the settings overlay is open
-	manual    bool // the manual is open, over settings if it was opened from there
-	manualTop int  // its first row shown
-	menuSel  int  // its selected row in settingRows
-	status   string
-	w, h     int
-	titles   titleCache
+	scroll        int
+	itemTop       int            // first items-pane row drawn
+	boxTop        map[string]int // first line drawn per box id ("result", "prompt", "file:<name>"); copied on write
+	boxSel        string         // selected box; "" or an unframed id means the first framed box
+	diff          fileDiff       // the reviewed edit item's diff, parsed at open
+	diffExp       map[int][2]int // context revealed per gap between hunks; copied on write
+	boxX          map[string]int // pan offset per unwrapped box id; copied on write
+	settings      viewerSettings
+	menu          bool // the settings overlay is open
+	manual        bool // the manual is open, over settings if it was opened from there
+	manualTop     int  // its first row shown
+	menuSel       int  // its selected row in settingRows
+	status        string
+	w, h          int
+	titles        titleCache
 
 	data    *detailData // what the detail shows from disk and the clock; see loadData
 	rowsGen int         // bumped whenever m.rows or any sessionRow's items/state/fin/nOut/title change
@@ -830,18 +827,8 @@ func (m *model) arm() {
 }
 
 func (m model) key(k string) (tea.Model, tea.Cmd) {
-	if m.closeAsk != "" {
-		return m.closeKey(k)
-	}
-	if m.restoreArmed != "" { // the overlay takes every key while open: nothing reaches the item behind it
-		switch k {
-		case " ":
-			m.restoreArmed = ""
-			return m, restoreCmd(m.q)
-		case "x":
-			m.restoreArmed = ""
-		}
-		return m, nil
+	if m.prompt.open() {
+		return m.promptKey(k)
 	}
 	if m.manual {
 		return m.manualKeyPress(k)
@@ -1040,17 +1027,11 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		pane = 1
 	}
 	press := msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft
-	if m.closeAsk != "" { // it takes every mouse event while open, and acts only on a click on an option
+	if m.prompt.open() { // it takes every mouse event while open, the wheel and releases too
 		if !press {
 			return m, nil
 		}
-		return m.closeClick(msg.X, msg.Y)
-	}
-	if m.restoreArmed != "" { // the overlay takes every mouse event while open, the wheel and releases too
-		if !press {
-			return m, nil
-		}
-		return m.restoreClick(msg.X, msg.Y)
+		return m.promptClick(msg.X, msg.Y)
 	}
 	if m.manual {
 		return m.manualMouse(msg, press)
@@ -1206,11 +1187,8 @@ func (m model) View() string {
 	}
 	v := b.String()
 	switch {
-	case m.closeAsk != "":
-		ol, x, y := m.closeOverlay()
-		v = withOverlay(v, ol, x, y)
-	case m.restoreArmed != "":
-		ol, x, y := m.restoreOverlay()
+	case m.prompt.open():
+		ol, x, y := m.promptOverlay()
 		v = withOverlay(v, ol, x, y)
 	case m.manual:
 		ol, x, y := m.manualOverlay()

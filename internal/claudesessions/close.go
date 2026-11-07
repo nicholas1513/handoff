@@ -55,6 +55,7 @@ func Close(q *queue.Queue, keepOwn bool, settle time.Duration) (string, error) {
 	var leaders []int
 	seen, kept := map[int]bool{}, 0
 	claude := map[int]int{}
+	var tabs []Tab
 	for _, l := range savedAndLive(q) {
 		sid, ok := sessionLeader(l.ClaudePID)
 		if !ok || sid <= 1 || seen[sid] {
@@ -71,6 +72,7 @@ func Close(q *queue.Queue, keepOwn bool, settle time.Duration) (string, error) {
 		}
 		leaders = append(leaders, sid)
 		claude[sid] = l.ClaudePID
+		tabs = append(tabs, tabOf(l))
 	}
 	slices.SortFunc(leaders, func(a, b int) int { // own last
 		switch {
@@ -81,6 +83,8 @@ func Close(q *queue.Queue, keepOwn bool, settle time.Duration) (string, error) {
 		}
 		return a - b
 	})
+	// Written first, and as what's about to happen: the viewer's own tab may end this process.
+	record(q.Root, "close", fmt.Sprintf("closing %s, keeping %d", plural(len(leaders), "tab"), kept), nil, [][]Tab{tabs})
 	closed := 0
 	for _, sid := range leaders {
 		if sid == own {
@@ -88,6 +92,7 @@ func Close(q *queue.Queue, keepOwn bool, settle time.Duration) (string, error) {
 		}
 		err := hangUp(claude[sid])
 		if serr := hangUp(sid); serr != nil && err != nil {
+			record(q.Root, "close", "", fmt.Errorf("after %s: %w", plural(closed, "tab"), serr), nil)
 			return fmt.Sprintf("closed %s", plural(closed, "tab")), serr
 		}
 		closed++

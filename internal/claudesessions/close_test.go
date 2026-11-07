@@ -1,10 +1,12 @@
 package claudesessions
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -89,5 +91,61 @@ func TestClosableWithNoSave(t *testing.T) {
 	w := newWorld(t)
 	if tabs, _ := Closable(w.q); tabs != 0 {
 		t.Fatalf("tabs = %d", tabs)
+	}
+}
+
+func logLines(t *testing.T, w *world) []string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(w.q.Root, logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(b)), "\n")
+}
+
+func TestLogRecordsSaveCloseAndRestore(t *testing.T) {
+	w := newWorld(t)
+	w.listed(t, idA, 1, nil)
+	if _, err := Save(w.q, t0); err != nil {
+		t.Fatal(err)
+	}
+	closeWorld(t, w, 9000)
+	if _, err := Close(w.q, false, 0); err != nil {
+		t.Fatal(err)
+	}
+	l := logLines(t, w)
+	if len(l) != 2 || !strings.Contains(l[0], ` save "saved 1 window`) || !strings.Contains(l[0], idA[:8]) ||
+		!strings.Contains(l[1], ` close "closing 1 tab, keeping 0"`) || !strings.Contains(l[1], idA[:8]) {
+		t.Fatalf("log:\n%s", strings.Join(l, "\n"))
+	}
+}
+
+func TestLogKeepsAFolderOnOneLine(t *testing.T) {
+	root := t.TempDir()
+	record(root, "restore", "", errors.New("boom"), [][]Tab{{{SessionID: idA, Cwd: "/tmp/a\nb"}}})
+	b, err := os.ReadFile(filepath.Join(root, logFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSuffix(string(b), "\n"); strings.Contains(got, "\n") || !strings.Contains(got, `"failed: boom"`) {
+		t.Fatalf("log: %q", b)
+	}
+}
+
+func TestLogRecordsARestore(t *testing.T) {
+	w := newWorld(t)
+	w.session(t, idA, 1, t0)
+	Save(w.q, t0)
+	delete(w.pids, 1)
+	p, err := Prepare(w.q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	l := logLines(t, w)
+	if last := l[len(l)-1]; !strings.Contains(last, ` restore "restored 1 window`) || !strings.Contains(last, idA[:8]) {
+		t.Fatalf("log:\n%s", strings.Join(l, "\n"))
 	}
 }

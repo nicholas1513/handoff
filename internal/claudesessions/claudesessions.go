@@ -128,7 +128,9 @@ func tabOf(l liveSession) Tab { return Tab{l.SessionID, l.Cwd, l.TranscriptPath}
 func Save(q *queue.Queue, now time.Time) (string, error) {
 	ls := live(q)
 	if len(ls) == 0 {
-		return "", errors.New("no running Claude sessions found; kept the last save")
+		err := errors.New("no running Claude sessions found; kept the last save")
+		record(q.Root, "save", "", err, nil)
+		return "", err
 	}
 	byTTY := map[int64]liveSession{}
 	for _, l := range ls {
@@ -168,12 +170,14 @@ func Save(q *queue.Queue, now time.Time) (string, error) {
 		s.Windows = append(s.Windows, w)
 	}
 	if err := write(q.Root, s); err != nil {
+		record(q.Root, "save", "", err, s.Windows)
 		return "", err
 	}
 	msg := "saved " + size(s.Windows)
 	if gerr != nil {
 		msg += "; Ghostty's layout was unavailable, so they're in one window (" + gerr.Error() + ")"
 	}
+	record(q.Root, "save", msg, nil, s.Windows)
 	return msg, nil
 }
 
@@ -208,6 +212,7 @@ type Plan struct {
 	Open    [][]Tab
 	Running int // already running, so not opened again
 	Gone    int // transcript deleted, or not a session id: can't be resumed
+	root    string
 }
 
 // Prepare reads the last save and checks each session against what is running now.
@@ -223,7 +228,7 @@ func Prepare(q *queue.Queue) (Plan, error) {
 	for _, l := range live(q) {
 		running[l.SessionID] = true
 	}
-	var p Plan
+	p := Plan{root: q.Root}
 	for _, w := range s.Windows {
 		var open []Tab
 		for _, t := range w {
@@ -262,6 +267,12 @@ func (p Plan) Summary() string {
 
 // Restore opens the plan's windows and tabs, each resuming its session in its folder.
 func (p Plan) Restore() (string, error) {
+	msg, err := p.restore()
+	record(p.root, "restore", msg, err, p.Open)
+	return msg, err
+}
+
+func (p Plan) restore() (string, error) {
 	if len(p.Open) == 0 {
 		return "nothing to restore: " + p.Summary(), nil
 	}
