@@ -26,7 +26,7 @@ File edits and commits
   An edit shows as a diff of the file: + shows more context. Commits show as git made them, in a review copy of the repo, here or in VS Code (see settings): v opens it there.
 
 Saving and restoring sessions
-  ctrl+s saves the Claude sessions running on this machine, with their Ghostty windows and tabs, then offers to close those tabs. ctrl+l asks to reopen the last save: one window per saved window, each tab resuming its session in its folder. Sessions still running aren't opened twice. Space confirms, x cancels. The Sessions pane title shows the last save. From a Claude tab, /handoff:claude-sessions save or restore does the same.
+  ctrl+s saves the Claude sessions running on this machine, with their Ghostty windows and tabs, then offers to close those tabs. ctrl+l asks to reopen the last save, defaulting to Yes: one window per saved window, each tab resuming its session in its folder. Sessions still running aren't opened twice. The Sessions pane title shows the last save, and ~/.handoff/claude-sessions.log records what each save, restore and close did. From a Claude tab, /handoff:claude-sessions save or restore does the same.
 
 Settings
   s opens them: diff and attachment word wrap, and where commits are reviewed. This manual is there too.

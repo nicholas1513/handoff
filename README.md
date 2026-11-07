@@ -132,12 +132,13 @@ hook never ran, and an `error` line shows why it failed and which input fields i
   saved tabs: `←` `→` choose, `space` or `enter` selects, and it defaults to **No**. Closing hangs up
   each tab's shell and its Claude, so work in progress stops; a restore resumes them. It leaves out
   tabs that have moved on since the save, and keeps the viewer's own tab while a run is in progress.
-  `ctrl+l` in the viewer opens a small confirmation
-  (`space` restores, `x` or **Reject** cancels, and nothing behind it reacts while it's open);
+  `ctrl+l` in the viewer asks first, the same way but defaulting to **Yes**, and nothing behind
+  either prompt reacts while it's open;
   `/handoff:claude-sessions restore` restores with no confirmation. A restore reopens the sessions
   after a reboot or crash: one Ghostty window per
   saved window, each tab running `claude --resume <id>` in its folder. Sessions still running aren't
-  opened again. The Sessions pane title shows the last save. The prompt hook answers the slash
+  opened again. The Sessions pane title shows the last save, and `~/.handoff/claude-sessions.log`
+  has a line for each save, restore and close: what it did, and which sessions by window. The prompt hook answers the slash
   command, so Claude never sees it. Running sessions come from Claude Code's own list in
   `~/.claude/sessions/`, so they needn't have the plugin. That format is undocumented, so the hook's
   records still cover any session it doesn't list or that can't be read; a session found only that
