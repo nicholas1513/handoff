@@ -113,6 +113,8 @@ type model struct {
 	boxX     map[string]int // pan offset per unwrapped box id; copied on write
 	settings viewerSettings
 	menu     bool // the settings overlay is open
+	manual    bool // the manual is open, over settings if it was opened from there
+	manualTop int  // its first row shown
 	menuSel  int  // its selected row in settingRows
 	status   string
 	w, h     int
@@ -407,6 +409,15 @@ func panIn(l layout) string {
 		}
 	}
 	return ""
+}
+
+// activateMenuRow acts on a row of the settings overlay: the settings, then the manual.
+func (m *model) activateMenuRow(i int) {
+	if i == len(settingRows) {
+		m.openManual()
+		return
+	}
+	m.toggleSetting(i)
 }
 
 // toggleSetting toggles settingRows[i] and saves.
@@ -823,14 +834,19 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.manual {
+		return m.manualKeyPress(k)
+	}
 	if m.menu { // the overlay takes every key while open
 		switch k {
 		case " ", "enter":
-			m.toggleSetting(m.menuSel)
+			m.activateMenuRow(m.menuSel)
+		case "?":
+			m.openManual()
 		case "up", "k":
 			m.menuSel = max(0, m.menuSel-1)
 		case "down", "j":
-			m.menuSel = min(len(settingRows)-1, m.menuSel+1)
+			m.menuSel = min(len(settingRows), m.menuSel+1) // the row after the settings is the manual
 		case "esc", "s", "q":
 			m.menu = false
 		}
@@ -909,6 +925,8 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 		m.open()
 	case "s":
 		m.menu = true
+	case "?":
+		m.openManual()
 	case "ctrl+s":
 		return m, saveCmd(m.q, m.now())
 	case "ctrl+l":
@@ -979,7 +997,7 @@ func (m model) footer() (string, int) {
 	if m.changed {
 		keys = append(keys, "o re-open")
 	}
-	plain, msg := strings.Join(append(keys, settingsKey, "q quit"), " · "), m.status
+	plain, msg := strings.Join(append(keys, settingsKey, "q quit", manualKey), " · "), m.status
 	if n := len(m.runs); m.quitArmed {
 		msg = fmt.Sprintf("%d run%s in progress: q again to quit", n, map[bool]string{true: "s"}[n > 1])
 	}
@@ -1019,13 +1037,16 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.restoreClick(msg.X, msg.Y)
 	}
+	if m.manual {
+		return m.manualMouse(msg, press)
+	}
 	if m.menu { // the overlay takes every click while open
 		if press {
 			ol, ox, oy := m.overlay()
 			inside := msg.X >= ox && msg.X < ox+lipgloss.Width(ol[0]) && msg.Y >= oy && msg.Y < oy+len(ol)
-			if i := msg.Y - oy - settingsRow; inside && i >= 0 && i < len(settingRows) {
+			if i := msg.Y - oy - settingsRow; inside && i >= 0 && i <= len(settingRows) {
 				m.menuSel = i
-				m.toggleSetting(i)
+				m.activateMenuRow(i)
 			} else if !inside {
 				m.menu = false
 			}
@@ -1169,10 +1190,14 @@ func (m model) View() string {
 		}
 	}
 	v := b.String()
-	if m.restoreArmed != "" {
+	switch {
+	case m.restoreArmed != "":
 		ol, x, y := m.restoreOverlay()
 		v = withOverlay(v, ol, x, y)
-	} else if m.menu {
+	case m.manual:
+		ol, x, y := m.manualOverlay()
+		v = withOverlay(v, ol, x, y)
+	case m.menu:
 		ol, x, y := m.overlay()
 		v = withOverlay(v, ol, x, y)
 	}
