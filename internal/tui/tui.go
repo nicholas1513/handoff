@@ -1040,8 +1040,11 @@ func (m model) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		pane = 1
 	}
 	press := msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft
-	if m.closeAsk != "" { // keys only: it takes every mouse event and acts on none
-		return m, nil
+	if m.closeAsk != "" { // it takes every mouse event while open, and acts only on a click on an option
+		if !press {
+			return m, nil
+		}
+		return m.closeClick(msg.X, msg.Y)
 	}
 	if m.restoreArmed != "" { // the overlay takes every mouse event while open, the wheel and releases too
 		if !press {

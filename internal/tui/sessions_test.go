@@ -193,10 +193,13 @@ func TestSaveOffersToCloseDefaultingToNo(t *testing.T) {
 	m.w, m.h = 120, 40
 	m, closes := saveThenPrompt(t, m, 3, 1)
 	v := ansi.Strip(m.View())
-	for _, want := range []string{"Close the 3 saved Claude tabs?", "[ No ]  [ Yes ]", "1 still working", "space / enter select"} {
+	for _, want := range []string{"Close the 3 saved Claude tabs?", "[ No ]  [ Yes ]", "1 still working"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("prompt is missing %q:\n%s", want, v)
 		}
+	}
+	if strings.Contains(v, "space") || strings.Contains(v, "←") {
+		t.Fatalf("the prompt shouldn't explain its keys:\n%s", v)
 	}
 	if m.closeYes {
 		t.Fatal("must default to No")
@@ -227,6 +230,56 @@ func TestCloseArrowsAndBothSelectKeys(t *testing.T) {
 		next, _ := m.Update(cmd())
 		if m = next.(model); len(*closes) != 1 || (*closes)[0] || m.status != "closed" {
 			t.Fatalf("%s: closes=%v status=%q", name, *closes, m.status)
+		}
+	}
+}
+
+// findBtn is where a button's text sits on screen.
+func findBtn(t *testing.T, m model, btn string) (x, y int) {
+	t.Helper()
+	for y, l := range strings.Split(ansi.Strip(m.View()), "\n") {
+		if i := strings.Index(l, btn); i >= 0 {
+			return ansi.StringWidth(l[:i]), y
+		}
+	}
+	t.Fatalf("no %q on screen", btn)
+	return 0, 0
+}
+
+func TestCloseDecisionRowIsCentred(t *testing.T) {
+	for _, busy := range []int{0, 2} {
+		_, m := setup(t)
+		m.w, m.h = 120, 40
+		m, _ = saveThenPrompt(t, m, 3, busy)
+		ol, ox, _ := m.closeOverlay()
+		w := len([]rune(ansi.Strip(ol[0])))
+		x, _ := findBtn(t, m, closeNoBtn)
+		left, right := x-ox, ox+w-(x+len(closeNoBtn)+closeGap+len(closeYesBtn))
+		if d := left - right; d < -1 || d > 1 {
+			t.Fatalf("busy=%d: margins %d and %d", busy, left, right)
+		}
+	}
+}
+
+func TestCloseOptionsTakeClicks(t *testing.T) {
+	for _, busy := range []int{0, 2} { // the warning moves the row
+		_, m := setup(t)
+		m.w, m.h = 120, 40
+		m, closes := saveThenPrompt(t, m, 3, busy)
+		x, y := findBtn(t, m, closeNoBtn)
+		m, cmd := click(m, x+2, y)
+		if cmd != nil || m.closeAsk != "" || len(*closes) != 0 {
+			t.Fatalf("No: cmd=%v open=%q", cmd != nil, m.closeAsk)
+		}
+		m, closes = saveThenPrompt(t, m, 3, busy)
+		x, y = findBtn(t, m, closeYesBtn)
+		m, cmd = click(m, x+len(closeYesBtn)-1, y)
+		if cmd == nil || m.closeAsk != "" {
+			t.Fatalf("Yes: cmd=%v open=%q", cmd != nil, m.closeAsk)
+		}
+		cmd()
+		if len(*closes) != 1 {
+			t.Fatalf("closes = %v", *closes)
 		}
 	}
 }

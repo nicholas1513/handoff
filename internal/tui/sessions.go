@@ -94,21 +94,53 @@ func closeCmd(q *queue.Queue, keepOwn bool) tea.Cmd {
 	}
 }
 
+const (
+	closeNoBtn  = "[ No ]"
+	closeYesBtn = "[ Yes ]"
+	closeGap    = 2
+)
+
+// closeRows are the prompt's rows above the decision row.
+func (m model) closeRows() []string {
+	rows := []string{section.Render("Sessions saved"), m.closeAsk}
+	if m.closeBusy > 0 {
+		rows = append(rows, warn.Render(fmt.Sprintf("%d still working: it stops now", m.closeBusy)))
+	}
+	return append(rows, "")
+}
+
 // closeOverlay is the close prompt as drawn, and where it sits (top-left cell) when centred in the window.
 func (m model) closeOverlay() (lines []string, x, y int) {
-	no, yes := "[ No ]", "[ Yes ]"
+	no, yes := closeNoBtn, closeYesBtn
 	if m.closeYes {
 		yes = sel.Render(yes)
 	} else {
 		no = sel.Render(no)
 	}
-	rows := []string{section.Render("Sessions saved"), m.closeAsk}
-	if m.closeBusy > 0 {
-		rows = append(rows, warn.Render(fmt.Sprintf("%d still working: it stops now", m.closeBusy)))
-	}
-	rows = append(rows, "", no+"  "+yes, dim.Render("← → choose · space / enter select"))
-	lines = strings.Split(focused.Padding(0, 1).Render(strings.Join(rows, "\n")), "\n")
+	rows := m.closeRows()
+	decision := lipgloss.PlaceHorizontal(lipgloss.Width(strings.Join(rows, "\n")), lipgloss.Center, no+strings.Repeat(" ", closeGap)+yes)
+	lines = strings.Split(focused.Padding(0, 1).Render(strings.Join(append(rows, decision), "\n")), "\n")
 	return lines, max(0, (m.w-lipgloss.Width(lines[0]))/2), max(0, (m.h-len(lines))/2)
+}
+
+// closeClick acts on the prompt's two options. Any other click is dropped: it must not land on what's behind.
+func (m model) closeClick(x, y int) (tea.Model, tea.Cmd) {
+	_, ox, oy := m.closeOverlay()
+	rows := m.closeRows()
+	if y != oy+1+len(rows) {
+		return m, nil
+	}
+	w := lipgloss.Width(strings.Join(rows, "\n"))
+	noX := ox + 2 + (w-len(closeNoBtn)-closeGap-len(closeYesBtn))/2 // border and padding, then centred
+	yesX := noX + len(closeNoBtn) + closeGap
+	switch {
+	case x >= noX && x < noX+len(closeNoBtn):
+		m.closeAsk = ""
+	case x >= yesX && x < yesX+len(closeYesBtn):
+		m.closeAsk = ""
+		return m, closeCmd(m.q, len(m.runs) > 0)
+	}
+	return m, nil
 }
 
 // The restore overlay's button row, counted from its top border, and its buttons, from its left border.
