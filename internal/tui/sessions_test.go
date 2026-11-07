@@ -36,19 +36,23 @@ func fakeSessions(t *testing.T, open int) *int {
 	return &restored
 }
 
-func TestCtrlLTwiceRestores(t *testing.T) {
+func TestCtrlLOpensOverlaySpaceRestores(t *testing.T) {
 	_, m := setup(t)
+	m.w, m.h = 120, 40
 	restored := fakeSessions(t, 2)
 	m, cmd := key(m, tea.KeyCtrlL)
 	if cmd != nil || *restored != 0 {
-		t.Fatal("one ctrl+l must only arm")
+		t.Fatal("ctrl+l must only open the overlay")
 	}
-	if f, _ := m.footer(); !strings.Contains(ansi.Strip(f), "restore 1 window · 2 sessions (1 running): ctrl+l again") {
-		t.Fatalf("footer doesn't say what ctrl+l again restores:\n%s", ansi.Strip(f))
+	v := ansi.Strip(m.View())
+	for _, want := range []string{"1 window · 2 sessions (1 running)", "[ Restore ]  [ Reject ]", "space restore · x reject"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("overlay is missing %q:\n%s", want, v)
+		}
 	}
-	m, cmd = key(m, tea.KeyCtrlL)
+	m, cmd = press(m, " ")
 	if cmd == nil {
-		t.Fatal("second ctrl+l didn't restore")
+		t.Fatal("space didn't restore")
 	}
 	next, _ := m.Update(cmd())
 	if m = next.(model); *restored != 1 || m.status != "restored" || m.restoreArmed != "" {
@@ -56,19 +60,73 @@ func TestCtrlLTwiceRestores(t *testing.T) {
 	}
 }
 
-func TestOtherKeyDisarmsRestore(t *testing.T) {
-	_, m := setup(t)
+func TestXRejectsTheRestoreNotTheItem(t *testing.T) {
+	q, m := setup(t)
 	restored := fakeSessions(t, 1)
 	m, _ = key(m, tea.KeyCtrlL)
-	sel := m.ii
-	m, cmd := press(m, "j") // only disarms: not acted on
-	if cmd != nil || m.restoreArmed != "" || m.ii != sel {
-		t.Fatalf("cmd=%v armed=%q moved=%v", cmd != nil, m.restoreArmed, m.ii != sel)
+	m, cmd := press(m, "x")
+	if cmd != nil || m.restoreArmed != "" || *restored != 0 {
+		t.Fatalf("cmd=%v armed=%q restored=%d", cmd != nil, m.restoreArmed, *restored)
+	}
+	if st := q.State(*m.item(), time.Now()); st != queue.Pending {
+		t.Fatalf("item state = %v: x reached the item behind the overlay", st)
+	}
+	if m.armed || m.confirm {
+		t.Fatal("x armed something behind the overlay")
+	}
+}
+
+// Nothing reaches the item, list or panes behind the overlay, and it stays open until answered.
+func TestRestoreOverlaySwallowsKeysAndMouse(t *testing.T) {
+	q, m := setup(t)
+	m.w, m.h = 120, 40
+	restored := fakeSessions(t, 1)
+	m, _ = key(m, tea.KeyCtrlL)
+	sel, focus, armed := m.ii, m.focus, m.restoreArmed
+	for _, k := range []string{"j", "k", "r", "q", "s", "o", "y", "c", "\t"} {
+		var cmd tea.Cmd
+		if m, cmd = press(m, k); cmd != nil {
+			t.Fatalf("%q returned a command", k)
+		}
+	}
+	m, cmd := key(m, tea.KeyCtrlL)
+	if cmd != nil {
+		t.Fatal("ctrl+l again restored: space confirms")
+	}
+	m, _ = click(m, 1, listTop) // behind the overlay, in the sessions pane
+	sw, _, _ := columns(m.w)
+	m, _ = click(m, sw+2, listTop) // the items pane
+	for _, b := range []tea.MouseButton{tea.MouseButtonWheelUp, tea.MouseButtonWheelDown} {
+		next, _ := m.Update(tea.MouseMsg{X: sw + 2, Y: listTop, Action: tea.MouseActionPress, Button: b})
+		m = next.(model)
+	}
+	if m.ii != sel || m.focus != focus || m.restoreArmed != armed || m.menu || m.armed || m.confirm || *restored != 0 {
+		t.Fatalf("leaked: ii=%d/%d focus=%d/%d armed=%q menu=%v run=%v confirm=%v restored=%d",
+			m.ii, sel, m.focus, focus, m.restoreArmed, m.menu, m.armed, m.confirm, *restored)
+	}
+	if st := q.State(*m.item(), time.Now()); st != queue.Pending {
+		t.Fatalf("item state = %v", st)
+	}
+}
+
+func TestRestoreOverlayButtons(t *testing.T) {
+	_, m := setup(t)
+	m.w, m.h = 120, 40
+	restored := fakeSessions(t, 1)
+	m, _ = key(m, tea.KeyCtrlL)
+	_, ox, oy := m.restoreOverlay()
+	m, cmd := click(m, ox+restoreRejectX+1, oy+restoreRow)
+	if cmd != nil || m.restoreArmed != "" {
+		t.Fatalf("Reject: cmd=%v armed=%q", cmd != nil, m.restoreArmed)
 	}
 	m, _ = key(m, tea.KeyCtrlL)
-	m, _ = click(m, 1, listTop) // a click disarms too
-	if _, cmd = key(m, tea.KeyCtrlL); cmd != nil || *restored != 0 {
-		t.Fatal("ctrl+l after a click restored without asking again")
+	m, cmd = click(m, ox+restoreBtnX+1, oy+restoreRow)
+	if cmd == nil || m.restoreArmed != "" {
+		t.Fatal("Restore button didn't restore")
+	}
+	cmd()
+	if *restored != 1 {
+		t.Fatalf("restored = %d", *restored)
 	}
 }
 

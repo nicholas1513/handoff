@@ -353,9 +353,8 @@ func (m model) overlay() (lines []string, x, y int) {
 	return lines, max(0, (m.w-w)/2), max(0, (m.h-len(lines))/2)
 }
 
-// withOverlay draws the overlay over view, keeping the view visible around it.
-func (m model) withOverlay(view string) string {
-	ol, x, y := m.overlay()
+// withOverlay draws an overlay over view at x, y, keeping the view visible around it.
+func withOverlay(view string, ol []string, x, y int) string {
 	vl := strings.Split(view, "\n")
 	for i, l := range ol {
 		if y+i >= len(vl) {
