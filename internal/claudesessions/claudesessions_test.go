@@ -58,11 +58,11 @@ func newWorld(t *testing.T) *world {
 func (w *world) session(t *testing.T, id string, pid int, started time.Time) {
 	tr := filepath.Join(w.q.Root, id+".jsonl")
 	os.WriteFile(tr, []byte("{}\n"), 0o600)
-	s := queue.Session{SessionID: id, Cwd: "/src/" + id[:1], TranscriptPath: tr, Started: started, ClaudePID: pid, ClaudeStart: int64(pid * 10)}
+	s := queue.Session{SessionID: id, Cwd: "/src/" + id[:1], TranscriptPath: tr, Started: started, ClaudePID: pid, ClaudeStart: t0.UnixMicro() + int64(pid)}
 	if err := w.q.WriteSession(s); err != nil {
 		t.Fatal(err)
 	}
-	w.pids[pid] = procInfo{start: int64(pid * 10), tty: int64(pid * 100), name: "2.1.319"}
+	w.pids[pid] = procInfo{start: t0.UnixMicro() + int64(pid), tty: int64(pid * 100), name: "2.1.319"} // near t0: on macOS a listed session must start near its process
 }
 
 func ids(ws [][]Tab) [][]string {
