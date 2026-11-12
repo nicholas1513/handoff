@@ -138,12 +138,12 @@ git commit -m "Viewer: show /resume titles in the sessions pane"
 ```go
 func TestCommandLinesShowEveryElementVerbatim(t *testing.T) {
 	cases := [][]string{
-		{"az", "rest", "--method", "put", "--resource", "499b84ac-1321-427f-aa17-267ca6975798",
-			"--url", "https://dev.azure.com/Org/Example%20Proj/Example%20Proj%20Team/_apis/dashboard/dashboards/3c9a1f2e-7b4d-4e8a-9f61-2d5c8b0e7a43?api-version=7.1-preview.3",
-			"--body", "@{file:body.json}"},
+		{"curl", "--request", "PUT", "--user-agent", "handoff-test/1.0",
+			"--url", "https://api.example.com/v1/organizations/example-org/projects/example-project/dashboards/3c9a1f2e-7b4d-4e8a-9f61-2d5c8b0e7a43?api-version=2024-01-01",
+			"--data", "@{file:body.json}"},
 		{"/usr/bin/true"},
 		{"curl", "--data", "-", "-X", "POST", "https://x.test/a"},
-		{"az", "rest", "--method=get", "--url=https://x.test/b"},
+		{"gh", "api", "--method=get", "--hostname=x.test", "repos/o/r"},
 		{"bash", "-c", "echo hi; rm -rf ~/x"},
 	}
 	for _, argv := range cases {
@@ -158,8 +158,8 @@ func TestCommandLinesShowEveryElementVerbatim(t *testing.T) {
 
 func TestMethodOf(t *testing.T) {
 	for want, argv := range map[string][]string{
-		"PUT": {"az", "rest", "--method", "put"}, "GET": {"az", "rest", "--method=get"},
-		"POST": {"curl", "-X", "POST"}, "": {"az", "account", "show"},
+		"PUT": {"gh", "api", "--method", "put"}, "GET": {"gh", "api", "--method=get"},
+		"POST": {"curl", "-X", "POST"}, "": {"gh", "auth", "status"},
 	} {
 		if got := methodOf(argv); got != want {
 			t.Errorf("methodOf(%q) = %q want %q", argv, got, want)
@@ -227,7 +227,7 @@ func TestDetailOrderAndTrustedSession(t *testing.T) {
 
 Add these three tests:
 - `TestDetailWarningsAboveCommand`: an item with argv `{"bash","-c","echo"}` puts `runs an interpreter` before `── Command`.
-- `TestDetailNarrowTerminal`: after `m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})`, `flatten(m.View())` contains every argv element of a long `az rest … --url https://…` item, and nothing panics.
+- `TestDetailNarrowTerminal`: after `m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})`, `flatten(m.View())` contains every argv element of a long `curl … --url https://…` item, and nothing panics.
 - `TestDetailPrettyPrintsJSONAttachment`: a `{file:body.json}` attachment containing `{"a":1}` renders with `"a": 1` under a `── 📎 body.json` heading.
 
 - [ ] **Step 2: Run them and confirm they fail**

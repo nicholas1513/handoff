@@ -147,7 +147,7 @@ func TestRunsInterpreter(t *testing.T) {
 	for argv0, want := range map[string]bool{
 		"bash": true, "/bin/sh": true, "zsh": true, "python3": true, "python3.12": true,
 		"node": true, "osascript": true, "env": true, "xargs": true, "sudo": true,
-		"az": false, "gh": false, "/usr/bin/curl": false, "pythonista": false,
+		"git": false, "gh": false, "/usr/bin/curl": false, "pythonista": false,
 	} {
 		if got := RunsInterpreter([]string{argv0, "x"}); got != want {
 			t.Errorf("RunsInterpreter(%q) = %v, want %v", argv0, got, want)

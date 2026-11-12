@@ -1,7 +1,7 @@
 # Viewer UX, round 2: design
 
 Date: 2026-10-21. Source: the user's feedback after the first real use, about 40 items staged
-across two sessions while building an Azure DevOps dashboard. The feedback log and the evidence
+across two sessions while building a dashboard through a REST API. The feedback log and the evidence
 are in `~/.claude/plans/handoff-tool-v1.md`, under "UX feedback after real use".
 
 ## Intent

@@ -1150,8 +1150,8 @@ func TestResultComesFirstForFinishedItem(t *testing.T) {
 
 func TestResultBoxVisibleOnScreen(t *testing.T) {
 	_, m := setup(t)
-	url := "https://management.azure.com/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example/providers/Microsoft.Web/sites/app-example/config/appsettings?api-version=2023-01-01"
-	m = withItem(t, m, queue.Item{Description: "list app settings", Reason: "check config", Argv: []string{"az", "rest", "--method", "get", "--url", url}}, nil, 160)
+	url := "https://api.example.com/v1/accounts/00000000-0000-0000-0000-000000000000/apps/app-example/config/settings?page_size=100"
+	m = withItem(t, m, queue.Item{Description: "list app settings", Reason: "check config", Argv: []string{"curl", "--request", "GET", "--url", url}}, nil, 160)
 	it := *m.item()
 	var o strings.Builder
 	for i := 1; i <= 301; i++ {
