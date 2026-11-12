@@ -189,7 +189,7 @@ func richWorld(t *testing.T) model {
 		"notes.txt": tempFile(t, "notes.txt", "short\nSTART"+strings.Repeat("y", 200)+"END\n"),
 	}
 	rich := addItem(t, q, queue.Item{Description: "rich", SessionID: sid,
-		Argv: []string{"az", "rest", "--method", "put", "--body", "@{file:body.json}", "{file:notes.txt}"}}, files)
+		Argv: []string{"curl", "--request", "PUT", "--data", "@{file:body.json}", "{file:notes.txt}"}}, files)
 	finished(t, q, rich, queue.Succeeded, numbered("out%03d", 120)+"out999"+strings.Repeat("x", 130)+"\n")
 
 	m = newModel(q, m.home)

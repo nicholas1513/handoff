@@ -47,7 +47,7 @@ claude --plugin-dir /path/to/handoff/plugin      # one session, nothing installe
 ```
 
 **Check it works.** Start a new session, since the hooks run at session start. Ask Claude to
-stage `az account show` (or any harmless command) with `handoff add --wait`, then run
+stage `gh auth status` (or any harmless command) with `handoff add --wait`, then run
 `! handoff`:
 - The item's session shows **✓ verified**, with the prompt you just typed.
 - Running it wakes Claude with the output.

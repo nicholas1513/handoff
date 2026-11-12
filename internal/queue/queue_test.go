@@ -31,7 +31,7 @@ func addOne(t *testing.T, q *Queue, body string) Item {
 	t.Helper()
 	it, err := q.Add(Item{
 		Description: "create query",
-		Argv:        []string{"az", "rest", "--body", "@{file:body.json}"},
+		Argv:        []string{"curl", "--data", "@{file:body.json}"},
 		Cwd:         "/tmp",
 		SessionID:   sid,
 	}, map[string]string{"body.json": body})
@@ -55,7 +55,7 @@ func TestAddLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Argv[3] != "@{file:body.json}" || got.SessionID != sid || len(got.Files) != 1 {
+	if got.Argv[2] != "@{file:body.json}" || got.SessionID != sid || len(got.Files) != 1 {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
 	b, err := os.ReadFile(filepath.Join(q.Root, "queue", it.ID, "files", "body.json"))

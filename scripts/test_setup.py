@@ -54,17 +54,17 @@ class AddDenyReadTest(unittest.TestCase):
     home = Path("/home/u")
 
     def test_adds_once_including_expanded_form(self):
-        s = {"sandbox": {"filesystem": {"denyRead": ["~/.azure", "/home/u/.handoff/snap"]}}}
+        s = {"sandbox": {"filesystem": {"denyRead": ["~/.ssh", "/home/u/.handoff/snap"]}}}
         self.assertTrue(add_deny_read(s, self.home))
-        self.assertEqual(s["sandbox"]["filesystem"]["denyRead"], ["~/.azure", "/home/u/.handoff/snap", "~/.handoff/review"])
+        self.assertEqual(s["sandbox"]["filesystem"]["denyRead"], ["~/.ssh", "/home/u/.handoff/snap", "~/.handoff/review"])
         self.assertEqual(s["permissions"]["deny"], ["Read(~/.handoff/snap/**)", "Read(~/.handoff/review/**)"])
         self.assertFalse(add_deny_read(s, self.home))
 
     def test_read_tool_rule_added_even_when_sandbox_entries_exist(self):
         # denyRead stops sandboxed commands only; the Read tool follows permission rules
-        s = {"sandbox": {"filesystem": {"denyRead": list(DENY_READ)}}, "permissions": {"deny": ["Read(~/.azure/**)"]}}
+        s = {"sandbox": {"filesystem": {"denyRead": list(DENY_READ)}}, "permissions": {"deny": ["Read(~/.ssh/**)"]}}
         self.assertTrue(add_deny_read(s, self.home))
-        self.assertEqual(s["permissions"]["deny"], ["Read(~/.azure/**)", "Read(~/.handoff/snap/**)", "Read(~/.handoff/review/**)"])
+        self.assertEqual(s["permissions"]["deny"], ["Read(~/.ssh/**)", "Read(~/.handoff/snap/**)", "Read(~/.handoff/review/**)"])
 
 
 class SetupStepsTest(unittest.TestCase):

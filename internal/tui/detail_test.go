@@ -31,12 +31,12 @@ func withItem(t *testing.T, m model, it queue.Item, files map[string]string, w i
 
 func TestCommandLinesShowEveryElementVerbatim(t *testing.T) {
 	cases := [][]string{
-		{"az", "rest", "--method", "put", "--resource", "499b84ac-1321-427f-aa17-267ca6975798",
-			"--url", "https://dev.azure.com/Org/Example%20Proj/Example%20Proj%20Team/_apis/dashboard/dashboards/3c9a1f2e-7b4d-4e8a-9f61-2d5c8b0e7a43?api-version=7.1-preview.3",
-			"--body", "@{file:body.json}"},
+		{"curl", "--request", "PUT", "--user-agent", "handoff-test/1.0",
+			"--url", "https://api.example.com/v1/organizations/example-org/projects/example-project/dashboards/3c9a1f2e-7b4d-4e8a-9f61-2d5c8b0e7a43?api-version=2024-01-01",
+			"--data", "@{file:body.json}"},
 		{"/usr/bin/true"},
 		{"curl", "--data", "-", "-X", "POST", "https://x.test/a"},
-		{"az", "rest", "--method=get", "--url=https://x.test/b"},
+		{"gh", "api", "--method=get", "--hostname=x.test", "repos/o/r"},
 		{"bash", "-c", "echo hi; rm -rf ~/x"},
 		{"--foo", "bar"},
 		{"-X", "POST", "https://x.test"},
@@ -84,9 +84,9 @@ func TestCommandLinesKeepArgvOrder(t *testing.T) {
 
 func TestMethodOf(t *testing.T) {
 	for want, argv := range map[string][]string{
-		"PUT": {"az", "rest", "--method", "put"}, "GET": {"az", "rest", "--method=get"},
-		"POST": {"curl", "-X", "POST"}, "": {"az", "account", "show"},
-		"DELETE": {"az", "rest", "--method", "GET", "--url", "u", "--method", "delete"},
+		"PUT": {"gh", "api", "--method", "put"}, "GET": {"gh", "api", "--method=get"},
+		"POST": {"curl", "-X", "POST"}, "": {"gh", "auth", "status"},
+		"DELETE": {"gh", "api", "--method", "GET", "repos/o/r", "--method", "delete"},
 	} {
 		if got := methodOf(argv); got != want {
 			t.Errorf("methodOf(%q) = %q want %q", argv, got, want)
@@ -95,7 +95,7 @@ func TestMethodOf(t *testing.T) {
 }
 
 func TestAttachmentDecoration(t *testing.T) {
-	got := flatten(strings.Join(commandLines([]string{"az", "rest", "--body", "@{file:body.json}"}, map[string]int{"body.json": 6100}), "\n"))
+	got := flatten(strings.Join(commandLines([]string{"curl", "--data", "@{file:body.json}"}, map[string]int{"body.json": 6100}), "\n"))
 	for _, w := range []string{"@{file:body.json}", "📎", "6.1 KB"} {
 		if !strings.Contains(got, w) {
 			t.Errorf("%q missing from %q", w, got)
@@ -217,7 +217,7 @@ func TestOtherAmWarns(t *testing.T) {
 
 func TestDetailNarrowTerminal(t *testing.T) {
 	_, m := setup(t)
-	argv := []string{"az", "rest", "--method", "put", "--url", "https://dev.azure.com/Org/Example%20Proj/_apis/dashboard/dashboards/3c9a1f2e-7b4d-4e8a-9f61-2d5c8b0e7a43?api-version=7.1-preview.3"}
+	argv := []string{"curl", "--request", "PUT", "--url", "https://api.example.com/v1/organizations/example-org/dashboards/3c9a1f2e-7b4d-4e8a-9f61-2d5c8b0e7a43?api-version=2024-01-01"}
 	m = withItem(t, m, queue.Item{Description: "x", Argv: argv}, nil, 60)
 	_ = m.View()
 	_, _, dw := columns(m.w)
@@ -246,7 +246,7 @@ func TestDetailPrettyPrintsJSONAttachment(t *testing.T) {
 	_, m := setup(t)
 	src := filepath.Join(t.TempDir(), "body.json")
 	os.WriteFile(src, []byte(`{"a":1}`), 0o600)
-	m = withItem(t, m, queue.Item{Description: "x", Argv: []string{"az", "rest", "--body", "@{file:body.json}"}}, map[string]string{"body.json": src}, 120)
+	m = withItem(t, m, queue.Item{Description: "x", Argv: []string{"curl", "--data", "@{file:body.json}"}}, map[string]string{"body.json": src}, 120)
 	out := ansi.Strip(m.detail())
 	if !strings.Contains(out, "── 📎 body.json") || !strings.Contains(out, `"a": 1`) {
 		t.Fatalf("attachment not pretty-printed under its heading:\n%s", out)
@@ -270,7 +270,7 @@ func TestIntegrityShowsAlgorithmAndPerFileHashes(t *testing.T) {
 	_, m := setup(t)
 	src := filepath.Join(t.TempDir(), "body.json")
 	os.WriteFile(src, []byte(`{"a":1}`), 0o600)
-	m = withItem(t, m, queue.Item{Description: "x", Argv: []string{"az", "rest", "--body", "@{file:body.json}"}}, map[string]string{"body.json": src}, 400)
+	m = withItem(t, m, queue.Item{Description: "x", Argv: []string{"curl", "--data", "@{file:body.json}"}}, map[string]string{"body.json": src}, 400)
 	out := ansi.Strip(m.detail())
 	fh := m.reviewed.FileHashes
 	if len(fh) != 2 {

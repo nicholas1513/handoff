@@ -35,8 +35,8 @@ func TestMatch(t *testing.T) {
 		{"docker ps *", "docker psx", false},
 		{"docker compose *", "docker compose up -d", true},
 		{"docker exec db *", "docker exec web ls", false},
-		{"az * show", "az account show", true},
-		{"az * show", "az account show --x", false},
+		{"gh * view", "gh pr view", true},
+		{"gh * view", "gh pr view --x", false},
 		{"a.b *", "aXb c", false}, // regex metacharacters are literal
 	} {
 		if got := match(c.pattern, c.cmd); got != c.want {
@@ -49,29 +49,29 @@ func TestCheckPrecedenceAndSources(t *testing.T) {
 	dir := t.TempDir()
 	user := write(t, dir, "user.json", `{
 		"permissions": {
-			"allow": ["Bash(az rest:*)", "mcp__azure-devops__wit_query", "Write(/tmp/**)"],
-			"deny": ["Read(~/.azure/**)", "Edit(**/.claude/settings.json)"]
+			"allow": ["Bash(gh api:*)", "mcp__github__get_issue", "Write(/tmp/**)"],
+			"deny": ["Read(~/.ssh/**)", "Edit(**/.claude/settings.json)"]
 		},
 		"sandbox": {"excludedCommands": ["docker ps", "docker ps *", "docker compose *"]}
 	}`)
-	local := write(t, dir, "local.json", `{"permissions": {"deny": ["Bash(az rest --method delete:*)"], "ask": ["Bash(gh *)"]}}`)
+	local := write(t, dir, "local.json", `{"permissions": {"deny": ["Bash(gh api --method DELETE:*)"], "ask": ["Bash(curl *)"]}}`)
 	s := Load([]string{user, local, filepath.Join(dir, "missing.json")})
 	if len(s.Problems) != 0 {
 		t.Fatalf("problems: %v", s.Problems)
 	}
 
-	b := s.Check([]string{"az", "rest", "--method", "get"})
-	if b.Permission == nil || b.Permission.Kind != Allow || b.Permission.File != user || b.Permission.Rule != "Bash(az rest:*)" {
+	b := s.Check([]string{"gh", "api", "--method", "GET"})
+	if b.Permission == nil || b.Permission.Kind != Allow || b.Permission.File != user || b.Permission.Rule != "Bash(gh api:*)" {
 		t.Fatalf("allow: %+v", b.Permission)
 	}
-	b = s.Check([]string{"az", "rest", "--method", "delete", "--url", "x"})
+	b = s.Check([]string{"gh", "api", "--method", "DELETE", "repos/o/r/hooks/1"})
 	if b.Permission == nil || b.Permission.Kind != Deny || b.Permission.File != local {
 		t.Fatalf("deny should beat allow: %+v", b.Permission)
 	}
-	if b = s.Check([]string{"gh", "pr", "list"}); b.Permission == nil || b.Permission.Kind != Ask {
+	if b = s.Check([]string{"curl", "https://x.test"}); b.Permission == nil || b.Permission.Kind != Ask {
 		t.Fatalf("ask: %+v", b.Permission)
 	}
-	b = s.Check([]string{"cat", "/Users/x/.azure/config"})
+	b = s.Check([]string{"cat", "/Users/x/.ssh/config"})
 	if b.Permission != nil || b.Excluded != nil {
 		t.Fatalf("Read()/Edit()/mcp rules must not match commands: %+v", b)
 	}
@@ -82,13 +82,13 @@ func TestCheckPrecedenceAndSources(t *testing.T) {
 
 func TestBadgeText(t *testing.T) {
 	dir := t.TempDir()
-	p := write(t, dir, ".claude/settings.local.json", `{"permissions": {"allow": ["Bash(az rest:*)"]}}`)
+	p := write(t, dir, ".claude/settings.local.json", `{"permissions": {"allow": ["Bash(gh api:*)"]}}`)
 	s := Load([]string{p})
-	got := s.Check([]string{"az", "rest"}).String(dir)
-	if got != "allowed for Claude by Bash(az rest:*) in ~/.claude/settings.local.json" {
+	got := s.Check([]string{"gh", "api"}).String(dir)
+	if got != "allowed for Claude by Bash(gh api:*) in ~/.claude/settings.local.json" {
 		t.Fatalf("badge = %q", got)
 	}
-	if got := s.Check([]string{"gh"}).String(dir); !strings.HasPrefix(got, "no Bash rule") {
+	if got := s.Check([]string{"curl"}).String(dir); !strings.HasPrefix(got, "no Bash rule") {
 		t.Fatalf("badge = %q", got)
 	}
 }

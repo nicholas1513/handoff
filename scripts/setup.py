@@ -206,7 +206,7 @@ class Setup:
         self._out(
             "Start a new Claude Code session (the plugin's hooks run at session start). Ask Claude to stage a\n"
             "harmless command, e.g.\n"
-            '  handoff add --wait --desc "check login" -- az account show\n'
+            '  handoff add --wait --desc "check login" -- gh auth status\n'
             "and run `! handoff`. The item's session should show \"✓ verified\" with your prompt, and running\n"
             "it should wake Claude with the output. \"⚠ unverified\" means the SessionStart hook didn't\n"
             "run: check that `which handoff` works in a new terminal, and restart Claude Code itself."

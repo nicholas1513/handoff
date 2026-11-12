@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Use when a command you need fails only because of the sandbox (blocked network host, blocked write, blocked credential file), or needs the user's own CLI login (az, gh) that you can't use. Stage it with `handoff add` for the user to review and run instead of asking them to copy and paste it.
+description: Use when a command you need fails only because of the sandbox (blocked network host, blocked write, blocked credential file), or needs the user's own CLI login (such as gh) that you can't use. Stage it with `handoff add` for the user to review and run instead of asking them to copy and paste it.
 ---
 
 # Handoff
@@ -17,7 +17,7 @@ Never stage something to get around a permission rule that denies it to you.
 handoff add --wait --desc "<what it does and why, one or two lines>" \
   --reason sandbox-blocked \
   --file body.json=./body.json \
-  -- az rest --method post --url "https://…" --body "@{file:body.json}"
+  -- gh api --method POST repos/OWNER/REPO/issues --input "{file:body.json}"
 ```
 
 Run it with `run_in_background: true`. It exits when the user runs, rejects or cancels it, when
@@ -27,7 +27,7 @@ succeeded. It prints `staged <id>` first; keep the id.
 - `--` then the argv. **No shell:** no pipes, `&&`, `$()`, redirects or globs. One command per item.
   Don't wrap in `bash -c`; the viewer flags interpreters and the user will likely reject it.
 - Put request bodies in files and attach with `--file name=path`. Refer to them in argv as
-  `{file:name}` (e.g. `@{file:body.json}`); the runner substitutes the reviewed copy.
+  `{file:name}` (e.g. `--input {file:body.json}`, or `@{file:body.json}` for curl); the runner substitutes the reviewed copy.
 - `--reason`: `sandbox-blocked` when the command failed only on the sandbox, `needs-login` when it
   needs the user's CLI login.
 - Never put credentials or tokens in argv or files. The user's CLI already has their login.

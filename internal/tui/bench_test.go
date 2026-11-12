@@ -37,7 +37,7 @@ func benchModel(b *testing.B) model {
 	}
 	q.AddPrompt(queue.Prompt{SessionID: sid, TS: time.Now(), Prompt: numbered("prompt line %04d", 1000)})
 	body := tempFile(b, "body.json", "{"+strings.TrimSuffix(js.String(), ",")+"}")
-	rich := add(queue.Item{Description: "rich", Argv: []string{"az", "rest", "--method", "put", "--body", "@{file:body.json}"}},
+	rich := add(queue.Item{Description: "rich", Argv: []string{"curl", "--request", "PUT", "--data", "@{file:body.json}"}},
 		map[string]string{"body.json": body}, numbered("out%04d some result text", 5000))
 	m := newModel(q, b.TempDir())
 	for i, it := range m.session().items {

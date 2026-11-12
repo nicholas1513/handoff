@@ -42,7 +42,7 @@ func withAtt(t *testing.T, m model, pn, rn, an, h int) model {
 	}
 	src := filepath.Join(t.TempDir(), "body.json")
 	os.WriteFile(src, []byte("{"+strings.TrimSuffix(b.String(), ",")+"}"), 0o600)
-	m = withItem(t, m, queue.Item{Description: "att", Argv: []string{"az", "rest", "--body", "@{file:body.json}"}}, map[string]string{"body.json": src}, 120)
+	m = withItem(t, m, queue.Item{Description: "att", Argv: []string{"curl", "--data", "@{file:body.json}"}}, map[string]string{"body.json": src}, 120)
 	if rn > 0 {
 		var o strings.Builder
 		for i := 1; i <= rn; i++ {
